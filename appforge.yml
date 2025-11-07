@@ -1,0 +1,45 @@
+name: App Forge CI
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: "App Forge Build ID (from App Forge UI)"
+        required: true
+        type: string
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [apk, web]
+    env:
+      # If triggered via dispatch, this is provided as input. For push, set REPO_VAR_BUILD_ID in repo variables before run.
+      BUILD_ID: ${{ github.event.inputs.build_id || vars.REPO_VAR_BUILD_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      # TODO: add your build steps for each matrix.target and produce a file at path/to/output
+
+      - name: Validate Build ID
+        run: |
+          if [ -z "${{ env.BUILD_ID }}" ]; then
+            echo "BUILD_ID is required. Provide via workflow_dispatch input or define REPO_VAR_BUILD_ID repo variable." >&2
+            exit 1
+          fi
+
+      - name: Upload artifact to App Forge
+        if: success()
+        run: |
+          curl -sS -X POST http://appx-0d65b40c-1a40-4f89-8a8e-59eb99dd5de4.fly.dev/ci/ingest/${{ env.BUILD_ID }}             -H "X-Filename: MyApp-1.0.0.${{ matrix.target == 'apk' && 'apk' || 'zip' }}"             -H "X-Content-Type: ${{ matrix.target == 'apk' && 'application/vnd.android.package-archive' || 'application/zip' }}"             -H "X-Build-Token: ${{ secrets.BUILD_INGEST_TOKEN }}"             --data-binary @path/to/output
+
+      - name: Update success status
+        if: success()
+        run: |
+          curl -sS -X POST http://appx-0d65b40c-1a40-4f89-8a8e-59eb99dd5de4.fly.dev/ci/update/${{ env.BUILD_ID }}             -H 'Content-Type: application/json'             -H "X-Build-Token: ${{ secrets.BUILD_INGEST_TOKEN }}"             -d '{"status":"success","progress":100}'
+
+      - name: Update failed status
+        if: failure()
+        run: |
+          curl -sS -X POST http://appx-0d65b40c-1a40-4f89-8a8e-59eb99dd5de4.fly.dev/ci/update/${{ env.BUILD_ID }}             -H 'Content-Type: application/json'             -H "X-Build-Token: ${{ secrets.BUILD_INGEST_TOKEN }}"             -d '{"status":"failed","progress":0,"logs":["failed on github actions"]}'
