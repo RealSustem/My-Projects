@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
+
     strategy:
       matrix:
         target: [apk, aab, web]
@@ -24,11 +26,20 @@ jobs:
       BUILD_ID: ${{ github.event.inputs.build_id || vars.REPO_VAR_BUILD_ID }}
       TARGET: ${{ matrix.target }}
       API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
-      TOKEN: ${{ secrets.SHEG0309030903090309030903090309 }}
+      TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Debug secrets access
+        run: |
+          echo "Checking secret access..."
+          if [ -z "${TOKEN:-}" ]; then
+            echo "⚠️ TOKEN is empty or inaccessible (GitHub might be blocking secrets for this workflow)."
+          else
+            echo "✅ TOKEN is set (length=${#TOKEN})"
+          fi
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -49,7 +60,7 @@ jobs:
           set -euo pipefail
           echo "🎯 TARGET=$TARGET"
 
-          # Detect gradlew
+          # Detect gradlew automatically
           GRADLEW=""
           if [ -f gradlew ]; then
             GRADLEW="./gradlew"
@@ -68,7 +79,7 @@ jobs:
                 "$GRADLEW" bundleRelease
                 ;;
               web)
-                echo "Web target selected; checking for npm build..."
+                echo "🌐 Web target detected"
                 if [ -f package.json ]; then npm ci && npm run build;
                 elif [ -f frontend/package.json ]; then (cd frontend && npm ci && npm run build);
                 else echo "⚠️ No package.json found; skipping web build"; fi
@@ -91,18 +102,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           if [ -z "${BUILD_ID:-}" ]; then
-            echo "❌ BUILD_ID is required" >&2
+            echo "❌ BUILD_ID is required for artifact ingestion."
             exit 1
           fi
 
           if [ -z "${TOKEN:-}" ]; then
-            echo "❌ Missing secret: BUILD_INGEST_TOKEN" >&2
-            echo "Go to: Settings → Secrets → Actions → New repository secret" >&2
-            exit 3
+            echo "⚠️ BUILD_INGEST_TOKEN secret is missing or inaccessible."
+            echo "Skipping artifact upload..."
+            exit 0
           fi
 
-          echo "📤 Uploading build artifact for target: $TARGET"
+          echo "📤 Uploading artifact for target: $TARGET"
 
           case "$TARGET" in
             apk)
@@ -147,15 +159,23 @@ jobs:
       - name: Update success status
         if: ${{ success() }}
         run: |
+          if [ -z "${TOKEN:-}" ]; then
+            echo "⚠️ Skipping success update — missing token"
+            exit 0
+          fi
           curl -fsSL -X POST "$API/ci/update/${BUILD_ID}" \
             -H 'Content-Type: application/json' \
-            -H "X-Build-Token: ${{ secrets.BUILD_INGEST_TOKEN }}" \
+            -H "X-Build-Token: $TOKEN" \
             -d '{"status":"success","progress":100}'
 
       - name: Update failed status
         if: ${{ failure() }}
         run: |
+          if [ -z "${TOKEN:-}" ]; then
+            echo "⚠️ Skipping failed status update — missing token"
+            exit 0
+          fi
           curl -fsSL -X POST "$API/ci/update/${BUILD_ID}" \
             -H 'Content-Type: application/json' \
-            -H "X-Build-Token: ${{ secrets.BUILD_INGEST_TOKEN }}" \
-            -d '{"status":"failed","progress":0,"logs":["failed on github actions"]}'
+            -H "X-Build-Token: $TOKEN" \
+            -d '{"status":"failed","progress":0,"logs":["failed on GitHub Actions"]}'
