@@ -60,11 +60,10 @@ jobs:
             echo "✅ Web artifact ready: $FILE"
           fi
 
-      - name: Upload to App Forge
+      - name: Upload Web to App Forge
         if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
         shell: bash
         run: |
-          set -euo pipefail
           echo "📤 Uploading $FILE_PATH to App Forge..."
           curl -fsSL -X POST "$API/ci/ingest/${BUILD_ID}" \
             -H "X-Filename: $(basename "$FILE_PATH")" \
@@ -103,6 +102,14 @@ jobs:
             platforms;android-34
           accept-android-sdk-licenses: true
 
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          echo "📂 Android SDK content:"
+          ls -l $ANDROID_HOME
+          ls -l $ANDROID_HOME/platforms
+          ls -l $ANDROID_HOME/build-tools
+
       - name: Build APK
         shell: bash
         run: |
@@ -122,7 +129,6 @@ jobs:
           else
             echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
             echo "✅ APK ready: $FILE"
-          fi
 
       - name: Upload APK to App Forge
         if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
@@ -165,6 +171,14 @@ jobs:
             platforms;android-34
           accept-android-sdk-licenses: true
 
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          echo "📂 Android SDK content:"
+          ls -l $ANDROID_HOME
+          ls -l $ANDROID_HOME/platforms
+          ls -l $ANDROID_HOME/build-tools
+
       - name: Build AAB
         shell: bash
         run: |
@@ -184,7 +198,6 @@ jobs:
           else
             echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
             echo "✅ AAB ready: $FILE"
-          fi
 
       - name: Upload AAB to App Forge
         if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
@@ -203,3 +216,4 @@ jobs:
           name: aab-build
           path: ${{ env.FILE_PATH }}
           retention-days: 5
+
