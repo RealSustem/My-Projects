@@ -41,7 +41,6 @@ jobs:
             (cd frontend && npm ci --prefer-offline --legacy-peer-deps && npm run build)
           else
             echo "⚠️ No package.json found, skipping web build"
-          fi
 
       - name: Prepare Web artifact
         shell: bash
@@ -52,13 +51,8 @@ jobs:
           elif [ -d build ]; then zip -r "$FILE" build >/dev/null
           elif [ -d www ]; then zip -r "$FILE" www >/dev/null
           else zip -r "$FILE" . >/dev/null; fi
-
-          if [ ! -f "$FILE" ]; then
-            echo "⚠️ Artifact not found, workflow continues"
-            echo "FILE_PATH=" >> "$GITHUB_ENV"
-          else
-            echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
-            echo "✅ Web artifact ready: $FILE"
+          echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+          echo "✅ Web artifact ready: $FILE"
 
       - name: Upload Web to App Forge
         if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
@@ -69,10 +63,9 @@ jobs:
             -H "X-Filename: $(basename "$FILE_PATH")" \
             -H "X-Content-Type: application/zip" \
             -H "X-Build-Token: $TOKEN" \
-            --data-binary @"$FILE_PATH" || echo "⚠️ Upload failed. Check TOKEN or BUILD_ID."
+            --data-binary @"$FILE_PATH" || echo "⚠️ Upload failed, check TOKEN or BUILD_ID"
 
       - name: Upload Web artifact to GitHub (fallback)
-        if: ${{ env.FILE_PATH != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: web-build
@@ -123,12 +116,8 @@ jobs:
         shell: bash
         run: |
           FILE=$(find . -type f -path "*/build/outputs/apk/*release*/*.apk" | head -n1)
-          if [ -z "$FILE" ]; then
-            echo "⚠️ APK not found"
-            echo "FILE_PATH=" >> "$GITHUB_ENV"
-          else
-            echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
-            echo "✅ APK ready: $FILE"
+          echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+          echo "✅ APK ready: $FILE"
 
       - name: Upload APK to App Forge
         if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
@@ -138,10 +127,9 @@ jobs:
             -H "X-Filename: $(basename "$FILE_PATH")" \
             -H "X-Content-Type: application/vnd.android.package-archive" \
             -H "X-Build-Token: $TOKEN" \
-            --data-binary @"$FILE_PATH" || echo "⚠️ Upload failed. Check TOKEN or BUILD_ID."
+            --data-binary @"$FILE_PATH" || echo "⚠️ Upload failed"
 
       - name: Upload APK artifact to GitHub (fallback)
-        if: ${{ env.FILE_PATH != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: apk-build
@@ -192,12 +180,8 @@ jobs:
         shell: bash
         run: |
           FILE=$(find . -type f -path "*/build/outputs/bundle/*[Rr]elease*/*.aab" | head -n1)
-          if [ -z "$FILE" ]; then
-            echo "⚠️ AAB not found"
-            echo "FILE_PATH=" >> "$GITHUB_ENV"
-          else
-            echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
-            echo "✅ AAB ready: $FILE"
+          echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+          echo "✅ AAB ready: $FILE"
 
       - name: Upload AAB to App Forge
         if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
@@ -207,10 +191,9 @@ jobs:
             -H "X-Filename: $(basename "$FILE_PATH")" \
             -H "X-Content-Type: application/octet-stream" \
             -H "X-Build-Token: $TOKEN" \
-            --data-binary @"$FILE_PATH" || echo "⚠️ Upload failed. Check TOKEN or BUILD_ID."
+            --data-binary @"$FILE_PATH" || echo "⚠️ Upload failed"
 
       - name: Upload AAB artifact to GitHub (fallback)
-        if: ${{ env.FILE_PATH != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: aab-build
