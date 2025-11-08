@@ -26,6 +26,8 @@ jobs:
       TARGET: ${{ matrix.target }}
       API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
       TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      PATH: /usr/local/lib/android/sdk/cmdline-tools/latest/bin:/usr/local/lib/android/sdk/platform-tools:$PATH
 
     steps:
       - name: Checkout repository
@@ -37,29 +39,24 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # Only for APK/AAB targets
-      - name: Set up Android SDK
+      - name: Install Android SDK (manually)
         if: ${{ matrix.target != 'web' }}
-        uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: "latest"
-          api-level: 34
-          build-tools: 34.0.0
-          packages: |
-            platform-tools
-            platforms;android-34
-            build-tools;34.0.0
-          accept-android-sdk-licenses: true
-
-      - name: Accept Android SDK licenses
-        if: ${{ matrix.target != 'web' }}
-        run: yes | sdkmanager --licenses
-
-      - name: Verify SDK installation
-        if: ${{ matrix.target != 'web' }}
+        shell: bash
         run: |
-          sdkmanager --list | head -n 40
-          echo "SDK and build-tools installed successfully!"
+          set -eux
+          mkdir -p $ANDROID_HOME/cmdline-tools
+          cd $ANDROID_HOME/cmdline-tools
+          # Стабильная версия командных инструментов
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+          unzip -q cmdline-tools.zip
+          mv cmdline-tools latest
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "tools" >/dev/null
+          echo "✅ Android SDK установлена"
 
       - name: Install Node.js
         if: ${{ matrix.target == 'web' }}
@@ -70,7 +67,7 @@ jobs:
       - name: Install dependencies
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
           echo "Installing dependencies for target: $TARGET"
           if [ -f gradlew ] || [ -n "$(ls -1 **/gradlew 2>/dev/null || true)" ]; then
             echo "Gradle project detected"
@@ -79,42 +76,30 @@ jobs:
             chmod +x "$GRADLEW"
             "$GRADLEW" dependencies || true
           elif [ -f package.json ]; then
-            echo "Node.js project detected"
             npm ci || npm install
           elif [ -f frontend/package.json ]; then
-            echo "Frontend detected"
             (cd frontend && npm ci || npm install)
-          else
-            echo "No dependencies to install"
           fi
 
       - name: Build project
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
           echo "Building for target: $TARGET"
-
           if [ -f gradlew ] || [ -n "$(ls -1 **/gradlew 2>/dev/null || true)" ]; then
-            echo "Gradle build detected"
             GRADLEW="$(ls -1 **/gradlew 2>/dev/null | head -n1)"
             [ -z "$GRADLEW" ] && GRADLEW=./gradlew
             chmod +x "$GRADLEW"
             case "$TARGET" in
               apk) "$GRADLEW" assembleRelease ;;
               aab) "$GRADLEW" bundleRelease ;;
-              web)
-                echo "Web target with gradle not supported, skipping"
-                ;;
+              *) echo "Unknown gradle target $TARGET" ;;
             esac
-          else
-            if [ "$TARGET" = "web" ]; then
-              if [ -f package.json ]; then
-                npm run build
-              elif [ -f frontend/package.json ]; then
-                (cd frontend && npm run build)
-              else
-                echo "No package.json found for web build"
-              fi
+          elif [ "$TARGET" = "web" ]; then
+            if [ -f package.json ]; then
+              npm run build
+            elif [ -f frontend/package.json ]; then
+              (cd frontend && npm run build)
             fi
           fi
 
@@ -122,14 +107,11 @@ jobs:
         if: ${{ env.TOKEN != '' }}
         shell: bash
         run: |
-          set -euo pipefail
-          echo "Uploading artifact for $TARGET"
-
+          set -e
           case "$TARGET" in
             apk)
               APK="$(ls -1 **/build/outputs/apk/*release*/**/*.apk **/build/outputs/apk/release/*.apk 2>/dev/null | head -n1)"
-              [ -z "$APK" ] && { echo "APK not found"; exit 2; }
-              echo "Found APK: $APK"
+              [ -z "$APK" ] && { echo "❌ APK not found"; exit 2; }
               curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
                 -H "X-Filename: $(basename "$APK")" \
                 -H "X-Content-Type: application/vnd.android.package-archive" \
@@ -138,8 +120,7 @@ jobs:
               ;;
             aab)
               AAB="$(ls -1 **/build/outputs/bundle/*[Rr]elease*/**/*.aab **/build/outputs/bundle/release/*.aab 2>/dev/null | head -n1)"
-              [ -z "$AAB" ] && { echo "AAB not found"; exit 2; }
-              echo "Found AAB: $AAB"
+              [ -z "$AAB" ] && { echo "❌ AAB not found"; exit 2; }
               curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
                 -H "X-Filename: $(basename "$AAB")" \
                 -H "X-Content-Type: application/octet-stream" \
@@ -157,7 +138,6 @@ jobs:
               else
                 zip -r "$ZIP" . >/dev/null
               fi
-              echo "Uploading web bundle: $ZIP"
               curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
                 -H "X-Filename: $ZIP" \
                 -H "X-Content-Type: application/zip" \
