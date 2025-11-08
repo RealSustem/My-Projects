@@ -14,7 +14,6 @@ on:
 env:
   BUILD_ID: ${{ github.event.inputs.build_id || vars.REPO_VAR_BUILD_ID }}
   API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
-  JSON_URL: https://example.com/yourfile.json   # <-- здесь укажи реальный URL JSON
 
 # ------------------------------------------------------------------
 # JOB: build_apk
@@ -27,10 +26,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Download JSON
-        run: |
-          curl -sS -O $JSON_URL
 
       - name: Prepare runner (install utils)
         run: |
@@ -65,10 +60,16 @@ jobs:
           echo "Android SDK installed"
 
       - name: Install Gradle (fallback if no gradlew)
-        if: ${{ !exists('gradlew') }}
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: 8.7
+        shell: bash
+        run: |
+          if [ ! -f gradlew ] && ! ls -1 **/gradlew 2>/dev/null | grep -q .; then
+            echo "No gradlew found, installing Gradle"
+            curl -sSLo gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
+            unzip -q gradle.zip -d $HOME/gradle
+            echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
+          else
+            echo "gradlew exists, skipping Gradle install"
+          fi
 
       - name: Verify sdk + tools
         run: |
@@ -85,7 +86,7 @@ jobs:
           shopt -s globstar
           if [ -f gradlew ] || ls -1 **/gradlew 2>/dev/null | grep -q .; then
             GRADLEW="$(ls -1 **/gradlew 2>/dev/null | head -n1)"
-            [ -z "$GRADLEW" ] && GRADLEW=./gradlew
+            [ -z "$GRADLEW" ] && GRADLEW=gradle
             chmod +x "$GRADLEW"
             "$GRADLEW" assembleRelease
           else
@@ -111,9 +112,9 @@ jobs:
             -H "X-Build-Token: $TOKEN" \
             --data-binary @"$APK"
 
-# ------------------------------------------------------------------
-# JOB: build_aab
-# ------------------------------------------------------------------
+  # ------------------------------------------------------------------
+  # JOB: build_aab
+  # ------------------------------------------------------------------
   build_aab:
     runs-on: ubuntu-latest
     env:
@@ -121,10 +122,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Download JSON
-        run: |
-          curl -sS -O $JSON_URL
 
       - name: Prepare runner (install utils)
         run: |
@@ -159,10 +156,16 @@ jobs:
           echo "Android SDK installed"
 
       - name: Install Gradle (fallback if no gradlew)
-        if: ${{ !exists('gradlew') }}
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: 8.7
+        shell: bash
+        run: |
+          if [ ! -f gradlew ] && ! ls -1 **/gradlew 2>/dev/null | grep -q .; then
+            echo "No gradlew found, installing Gradle"
+            curl -sSLo gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
+            unzip -q gradle.zip -d $HOME/gradle
+            echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
+          else
+            echo "gradlew exists, skipping Gradle install"
+          fi
 
       - name: Build AAB (Gradle)
         shell: bash
@@ -171,7 +174,7 @@ jobs:
           shopt -s globstar
           if [ -f gradlew ] || ls -1 **/gradlew 2>/dev/null | grep -q .; then
             GRADLEW="$(ls -1 **/gradlew 2>/dev/null | head -n1)"
-            [ -z "$GRADLEW" ] && GRADLEW=./gradlew
+            [ -z "$GRADLEW" ] && GRADLEW=gradle
             chmod +x "$GRADLEW"
             "$GRADLEW" bundleRelease
           else
@@ -197,9 +200,9 @@ jobs:
             -H "X-Build-Token: $TOKEN" \
             --data-binary @"$AAB"
 
-# ------------------------------------------------------------------
-# JOB: build_web
-# ------------------------------------------------------------------
+  # ------------------------------------------------------------------
+  # JOB: build_web
+  # ------------------------------------------------------------------
   build_web:
     runs-on: ubuntu-latest
     env:
@@ -207,10 +210,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Download JSON
-        run: |
-          curl -sS -O $JSON_URL
 
       - name: Prepare runner (install utils)
         run: |
@@ -232,6 +231,7 @@ jobs:
             (cd frontend && npm ci)
           else
             echo "No package.json found; skipping npm install"
+          fi
 
       - name: Build web
         shell: bash
@@ -243,6 +243,7 @@ jobs:
             (cd frontend && npm run build)
           else
             echo "No package.json found; skipping web build"
+          fi
 
       - name: Upload web to App Forge (skip if no token)
         if: ${{ env.TOKEN != '' }}
