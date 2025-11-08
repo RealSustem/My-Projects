@@ -2,8 +2,8 @@ name: App Forge CI
 
 on:
   push:
-    branches: ["main"]
-    tags: ["v*"]
+    branches: [ "main" ]
+    tags: [ "v*" ]
   workflow_dispatch:
     inputs:
       build_id:
@@ -11,21 +11,25 @@ on:
         required: true
         type: string
 
-env:
-  BUILD_ID: ${{ github.event.inputs.build_id || vars.REPO_VAR_BUILD_ID }}
-  API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
-
-# -------------------------------
-# APK job
-# -------------------------------
 jobs:
-  build_apk:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    strategy:
+      matrix:
+        target: [apk, aab, web]
+
     env:
-      TARGET: apk
+      BUILD_ID: ${{ github.event.inputs.build_id || vars.REPO_VAR_BUILD_ID }}
+      TARGET: ${{ matrix.target }}
+      API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
       TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -33,190 +37,147 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # Only for APK/AAB targets
       - name: Set up Android SDK
+        if: ${{ matrix.target != 'web' }}
         uses: android-actions/setup-android@v3
         with:
-          cmdline-tools-version: latest
+          cmdline-tools-version: "latest"
+          api-level: 34
+          build-tools: 34.0.0
           packages: |
             platform-tools
             platforms;android-34
             build-tools;34.0.0
           accept-android-sdk-licenses: true
 
-      - name: Cache Gradle
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('**/gradle/wrapper/gradle-wrapper.properties') }}
+      - name: Accept Android SDK licenses
+        if: ${{ matrix.target != 'web' }}
+        run: yes | sdkmanager --licenses
 
-      - name: Build APK
-        shell: bash
+      - name: Verify SDK installation
+        if: ${{ matrix.target != 'web' }}
         run: |
-          set -euo pipefail
-          shopt -s globstar
-          GRADLEW=""
-          if [ -f gradlew ]; then GRADLEW=./gradlew
-          elif ls -1 **/gradlew 2>/dev/null | grep -q .; then GRADLEW=$(ls -1 **/gradlew 2>/dev/null | head -n1)
-          fi
-          if [ -z "$GRADLEW" ]; then
-            echo "gradlew not found; skipping APK build"
-          else
-            chmod +x "$GRADLEW"
-            "$GRADLEW" assembleRelease
-          fi
+          sdkmanager --list | head -n 40
+          echo "SDK and build-tools installed successfully!"
 
-      - name: Ingest APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${TOKEN:-}" ]; then
-            echo "BUILD_INGEST_TOKEN missing; skipping APK upload"
-            exit 0
-          fi
-          APK=$(ls -1 **/build/outputs/apk/*release*/**/*.apk **/build/outputs/apk/release/*.apk 2>/dev/null | head -n1)
-          if [ -z "$APK" ]; then
-            echo "APK not found; skipping upload"
-          else
-            echo "Uploading APK: $APK"
-            curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
-              -H "X-Filename: $(basename "$APK")" \
-              -H "X-Content-Type: application/vnd.android.package-archive" \
-              -H "X-Build-Token: $TOKEN" \
-              --data-binary @"$APK"
-
-# -------------------------------
-# AAB job
-# -------------------------------
-  build_aab:
-    runs-on: ubuntu-latest
-    env:
-      TARGET: aab
-      TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: latest
-          packages: |
-            platform-tools
-            platforms;android-34
-            build-tools;34.0.0
-          accept-android-sdk-licenses: true
-
-      - name: Cache Gradle
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('**/gradle/wrapper/gradle-wrapper.properties') }}
-
-      - name: Build AAB
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s globstar
-          GRADLEW=""
-          if [ -f gradlew ]; then GRADLEW=./gradlew
-          elif ls -1 **/gradlew 2>/dev/null | grep -q .; then GRADLEW=$(ls -1 **/gradlew 2>/dev/null | head -n1)
-          fi
-          if [ -z "$GRADLEW" ]; then
-            echo "gradlew not found; skipping AAB build"
-          else
-            chmod +x "$GRADLEW"
-            "$GRADLEW" bundleRelease
-          fi
-
-      - name: Ingest AAB
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${TOKEN:-}" ]; then
-            echo "BUILD_INGEST_TOKEN missing; skipping AAB upload"
-            exit 0
-          fi
-          AAB=$(ls -1 **/build/outputs/bundle/*[Rr]elease*/**/*.aab **/build/outputs/bundle/release/*.aab 2>/dev/null | head -n1)
-          if [ -z "$AAB" ]; then
-            echo "AAB not found; skipping upload"
-          else
-            echo "Uploading AAB: $AAB"
-            curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
-              -H "X-Filename: $(basename "$AAB")" \
-              -H "X-Content-Type: application/octet-stream" \
-              -H "X-Build-Token: $TOKEN" \
-              --data-binary @"$AAB"
-
-# -------------------------------
-# Web job
-# -------------------------------
-  build_web:
-    runs-on: ubuntu-latest
-    env:
-      TARGET: web
-      TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node.js
+      - name: Install Node.js
+        if: ${{ matrix.target == 'web' }}
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-
-      - name: Cache npm
-        uses: actions/cache@v3
-        with:
-          path: ~/.npm
-          key: npm-${{ hashFiles('**/package-lock.json') }}
 
       - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
-          if [ -f package.json ]; then
-            npm ci
+          echo "Installing dependencies for target: $TARGET"
+          if [ -f gradlew ] || [ -n "$(ls -1 **/gradlew 2>/dev/null || true)" ]; then
+            echo "Gradle project detected"
+            GRADLEW="$(ls -1 **/gradlew 2>/dev/null | head -n1)"
+            [ -z "$GRADLEW" ] && GRADLEW=./gradlew
+            chmod +x "$GRADLEW"
+            "$GRADLEW" dependencies || true
+          elif [ -f package.json ]; then
+            echo "Node.js project detected"
+            npm ci || npm install
           elif [ -f frontend/package.json ]; then
-            (cd frontend && npm ci)
+            echo "Frontend detected"
+            (cd frontend && npm ci || npm install)
           else
-            echo "No package.json found; skipping npm install"
+            echo "No dependencies to install"
+          fi
 
-      - name: Build Web
+      - name: Build project
         shell: bash
         run: |
           set -euo pipefail
-          if [ -f package.json ]; then
-            npm run build
-          elif [ -f frontend/package.json ]; then
-            (cd frontend && npm run build)
-          else
-            echo "No package.json found; skipping web build"
+          echo "Building for target: $TARGET"
 
-      - name: Ingest Web
+          if [ -f gradlew ] || [ -n "$(ls -1 **/gradlew 2>/dev/null || true)" ]; then
+            echo "Gradle build detected"
+            GRADLEW="$(ls -1 **/gradlew 2>/dev/null | head -n1)"
+            [ -z "$GRADLEW" ] && GRADLEW=./gradlew
+            chmod +x "$GRADLEW"
+            case "$TARGET" in
+              apk) "$GRADLEW" assembleRelease ;;
+              aab) "$GRADLEW" bundleRelease ;;
+              web)
+                echo "Web target with gradle not supported, skipping"
+                ;;
+            esac
+          else
+            if [ "$TARGET" = "web" ]; then
+              if [ -f package.json ]; then
+                npm run build
+              elif [ -f frontend/package.json ]; then
+                (cd frontend && npm run build)
+              else
+                echo "No package.json found for web build"
+              fi
+            fi
+          fi
+
+      - name: Upload artifact to App Forge
+        if: ${{ env.TOKEN != '' }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${TOKEN:-}" ]; then
-            echo "BUILD_INGEST_TOKEN missing; skipping web upload"
-            exit 0
-          fi
-          ZIP=web.zip
-          if [ -d dist ]; then zip -r "$ZIP" dist >/dev/null
-          elif [ -d build ]; then zip -r "$ZIP" build >/dev/null
-          elif [ -d www ]; then zip -r "$ZIP" www >/dev/null
-          else zip -r "$ZIP" . >/dev/null
-          fi
-          echo "Uploading Web ZIP: $ZIP"
-          curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
-            -H "X-Filename: $ZIP" \
-            -H "X-Content-Type: application/zip" \
+          echo "Uploading artifact for $TARGET"
+
+          case "$TARGET" in
+            apk)
+              APK="$(ls -1 **/build/outputs/apk/*release*/**/*.apk **/build/outputs/apk/release/*.apk 2>/dev/null | head -n1)"
+              [ -z "$APK" ] && { echo "APK not found"; exit 2; }
+              echo "Found APK: $APK"
+              curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
+                -H "X-Filename: $(basename "$APK")" \
+                -H "X-Content-Type: application/vnd.android.package-archive" \
+                -H "X-Build-Token: $TOKEN" \
+                --data-binary @"$APK"
+              ;;
+            aab)
+              AAB="$(ls -1 **/build/outputs/bundle/*[Rr]elease*/**/*.aab **/build/outputs/bundle/release/*.aab 2>/dev/null | head -n1)"
+              [ -z "$AAB" ] && { echo "AAB not found"; exit 2; }
+              echo "Found AAB: $AAB"
+              curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
+                -H "X-Filename: $(basename "$AAB")" \
+                -H "X-Content-Type: application/octet-stream" \
+                -H "X-Build-Token: $TOKEN" \
+                --data-binary @"$AAB"
+              ;;
+            web)
+              ZIP=web.zip
+              if [ -d dist ]; then
+                zip -r "$ZIP" dist >/dev/null
+              elif [ -d build ]; then
+                zip -r "$ZIP" build >/dev/null
+              elif [ -d www ]; then
+                zip -r "$ZIP" www >/dev/null
+              else
+                zip -r "$ZIP" . >/dev/null
+              fi
+              echo "Uploading web bundle: $ZIP"
+              curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
+                -H "X-Filename: $ZIP" \
+                -H "X-Content-Type: application/zip" \
+                -H "X-Build-Token: $TOKEN" \
+                --data-binary @"$ZIP"
+              ;;
+          esac
+
+      - name: Update success status
+        if: ${{ success() && env.TOKEN != '' }}
+        run: |
+          curl -sS -X POST "$API/ci/update/${BUILD_ID}" \
+            -H 'Content-Type: application/json' \
             -H "X-Build-Token: $TOKEN" \
-            --data-binary @"$ZIP"
+            -d '{"status":"success","progress":100}'
+
+      - name: Update failed status
+        if: ${{ failure() && env.TOKEN != '' }}
+        run: |
+          curl -sS -X POST "$API/ci/update/${BUILD_ID}" \
+            -H 'Content-Type: application/json' \
+            -H "X-Build-Token: $TOKEN" \
+            -d '{"status":"failed","progress":0,"logs":["failed on github actions"]}'
