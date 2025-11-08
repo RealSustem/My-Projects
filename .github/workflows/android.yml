@@ -11,214 +11,198 @@ on:
         required: true
         type: string
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    strategy:
-      matrix:
-        target: [apk, aab, web]
-    env:
-      BUILD_ID: ${{ github.event.inputs.build_id || vars.REPO_VAR_BUILD_ID }}
-      TARGET: ${{ matrix.target }}
-    steps:
-      # Checkout repo
-      - uses: actions/checkout@v4
+env:
+  BUILD_ID: ${{ github.event.inputs.build_id || vars.REPO_VAR_BUILD_ID }}
+  API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
 
-      # Setup Java
+# -------------------------------
+# APK job
+# -------------------------------
+jobs:
+  build_apk:
+    runs-on: ubuntu-latest
+    env:
+      TARGET: apk
+      TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-
-      # Setup Node.js for web
-      - name: Set up Node.js
-        if: ${{ matrix.target == 'web' }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      # Setup Android SDK for apk/aab
       - name: Set up Android SDK
-        if: ${{ matrix.target != 'web' }}
         uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: "9.0.0"
           packages: "platform-tools,platforms;android-34,build-tools;34.0.0"
           accept-android-sdk-licenses: true
-
-      # Cache Gradle
       - name: Cache Gradle
-        if: ${{ matrix.target != 'web' }}
         uses: actions/cache@v3
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
           key: gradle-${{ hashFiles('**/gradle/wrapper/gradle-wrapper.properties') }}
+      - name: Build APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar
+          GRADLEW=""
+          if [ -f gradlew ]; then GRADLEW=./gradlew
+          elif ls -1 **/gradlew 2>/dev/null | grep -q .; then GRADLEW=$(ls -1 **/gradlew 2>/dev/null | head -n1)
+          fi
+          if [ -z "$GRADLEW" ]; then
+            echo "gradlew not found; skipping APK build"
+          else
+            chmod +x "$GRADLEW"
+            "$GRADLEW" assembleRelease
+          fi
+      - name: Ingest APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${TOKEN:-}" ]; then
+            echo "BUILD_INGEST_TOKEN missing; skipping APK upload"
+            exit 0
+          fi
+          APK=$(ls -1 **/build/outputs/apk/*release*/**/*.apk **/build/outputs/apk/release/*.apk 2>/dev/null | head -n1)
+          if [ -z "$APK" ]; then
+            echo "APK not found; skipping upload"
+          else
+            echo "Uploading APK: $APK"
+            HTTP_CODE=$(curl -sS -w "%{http_code}" -o /dev/null -X POST "$API/ci/ingest/$BUILD_ID" \
+              -H "X-Filename: $(basename "$APK")" \
+              -H "X-Content-Type: application/vnd.android.package-archive" \
+              -H "X-Build-Token: $TOKEN" \
+              --data-binary @"$APK")
+            echo "Upload finished, HTTP code: $HTTP_CODE"
+          fi
 
-      # Cache npm
+# -------------------------------
+# AAB job
+# -------------------------------
+  build_aab:
+    runs-on: ubuntu-latest
+    env:
+      TARGET: aab
+      TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: "9.0.0"
+          packages: "platform-tools,platforms;android-34,build-tools;34.0.0"
+          accept-android-sdk-licenses: true
+      - name: Cache Gradle
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('**/gradle/wrapper/gradle-wrapper.properties') }}
+      - name: Build AAB
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar
+          GRADLEW=""
+          if [ -f gradlew ]; then GRADLEW=./gradlew
+          elif ls -1 **/gradlew 2>/dev/null | grep -q .; then GRADLEW=$(ls -1 **/gradlew 2>/dev/null | head -n1)
+          fi
+          if [ -z "$GRADLEW" ]; then
+            echo "gradlew not found; skipping AAB build"
+          else
+            chmod +x "$GRADLEW"
+            "$GRADLEW" bundleRelease
+          fi
+      - name: Ingest AAB
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${TOKEN:-}" ]; then
+            echo "BUILD_INGEST_TOKEN missing; skipping AAB upload"
+            exit 0
+          fi
+          AAB=$(ls -1 **/build/outputs/bundle/*[Rr]elease*/**/*.aab **/build/outputs/bundle/release/*.aab 2>/dev/null | head -n1)
+          if [ -z "$AAB" ]; then
+            echo "AAB not found; skipping upload"
+          else
+            echo "Uploading AAB: $AAB"
+            HTTP_CODE=$(curl -sS -w "%{http_code}" -o /dev/null -X POST "$API/ci/ingest/$BUILD_ID" \
+              -H "X-Filename: $(basename "$AAB")" \
+              -H "X-Content-Type: application/octet-stream" \
+              -H "X-Build-Token: $TOKEN" \
+              --data-binary @"$AAB")
+            echo "Upload finished, HTTP code: $HTTP_CODE"
+          fi
+
+# -------------------------------
+# Web job
+# -------------------------------
+  build_web:
+    runs-on: ubuntu-latest
+    env:
+      TARGET: web
+      TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
       - name: Cache npm
-        if: ${{ matrix.target == 'web' }}
         uses: actions/cache@v3
         with:
           path: ~/.npm
           key: npm-${{ hashFiles('**/package-lock.json') }}
-
-      # Install dependencies
       - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$TARGET" != "web" ]; then
-            # Nothing extra for Gradle, wrapper will handle dependencies
-            echo "Gradle will download dependencies automatically."
+          if [ -f package.json ]; then
+            npm ci
+          elif [ -f frontend/package.json ]; then
+            (cd frontend && npm ci)
           else
-            if [ -f package.json ]; then
-              npm ci
-            elif [ -f frontend/package.json ]; then
-              (cd frontend && npm ci)
-            else
-              echo "No package.json found for web; skipping npm install."
-            fi
+            echo "No package.json found; skipping npm install"
           fi
-
-      # Build project
-      - name: Build project
+      - name: Build Web
         shell: bash
-        continue-on-error: true
         run: |
           set -euo pipefail
-          shopt -s globstar
-          echo "TARGET=$TARGET"
-
-          GRADLEW=""
-          if [ -f gradlew ]; then
-            GRADLEW=./gradlew
-          elif ls -1 **/gradlew 2>/dev/null | grep -q .; then
-            GRADLEW=$(ls -1 **/gradlew 2>/dev/null | head -n1)
+          if [ -f package.json ]; then
+            npm run build
+          elif [ -f frontend/package.json ]; then
+            (cd frontend && npm run build)
+          else
+            echo "No package.json found; skipping web build"
           fi
-
-          if [ -n "$GRADLEW" ]; then
-            chmod +x "$GRADLEW"
-            case "$TARGET" in
-              apk) "$GRADLEW" assembleRelease ;;
-              aab) "$GRADLEW" bundleRelease ;;
-              web) echo "Web target selected; npm build handled below" ;;
-              *) echo "Unknown target: $TARGET"; exit 1 ;;
-            esac
-          elif [ "$TARGET" != "web" ]; then
-            echo "No gradle wrapper found for $TARGET; skipping build"
-          fi
-
-          # Web build fallback
-          if [ "$TARGET" = "web" ]; then
-            if [ -f package.json ]; then
-              npm run build
-            elif [ -f frontend/package.json ]; then
-              (cd frontend && npm run build)
-            else
-              echo "No package.json found; skipping web build"
-            fi
-          fi
-
-      # Ingest artifact to App Forge
-      - name: Ingest artifact to App Forge
+      - name: Ingest Web
         shell: bash
-        continue-on-error: true
-        env:
-          API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
-          TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
         run: |
           set -euo pipefail
-
-          if [ -z "$BUILD_ID" ]; then
-            echo "BUILD_ID is missing; skipping ingestion"
-            exit 0
-          fi
-
           if [ -z "${TOKEN:-}" ]; then
-            echo "BUILD_INGEST_TOKEN not set; skipping ingestion"
+            echo "BUILD_INGEST_TOKEN missing; skipping web upload"
             exit 0
           fi
-
-          echo "TARGET=$TARGET"
-
-          case "$TARGET" in
-            apk)
-              APK=$(ls -1 **/build/outputs/apk/*release*/**/*.apk **/build/outputs/apk/release/*.apk 2>/dev/null | head -n1)
-              if [ -z "$APK" ]; then
-                echo "APK not found; skipping upload"
-              else
-                echo "Uploading APK: $APK"
-                HTTP_CODE=$(curl -sS -w "%{http_code}" -o /dev/null -X POST "$API/ci/ingest/$BUILD_ID" \
-                  -H "X-Filename: $(basename "$APK")" \
-                  -H "X-Content-Type: application/vnd.android.package-archive" \
-                  -H "X-Build-Token: $TOKEN" \
-                  --data-binary @"$APK")
-                echo "Upload finished, HTTP code: $HTTP_CODE"
-              fi
-              ;;
-            aab)
-              AAB=$(ls -1 **/build/outputs/bundle/*[Rr]elease*/**/*.aab **/build/outputs/bundle/release/*.aab 2>/dev/null | head -n1)
-              if [ -z "$AAB" ]; then
-                echo "AAB not found; skipping upload"
-              else
-                echo "Uploading AAB: $AAB"
-                HTTP_CODE=$(curl -sS -w "%{http_code}" -o /dev/null -X POST "$API/ci/ingest/$BUILD_ID" \
-                  -H "X-Filename: $(basename "$AAB")" \
-                  -H "X-Content-Type: application/octet-stream" \
-                  -H "X-Build-Token: $TOKEN" \
-                  --data-binary @"$AAB")
-                echo "Upload finished, HTTP code: $HTTP_CODE"
-              fi
-              ;;
-            web)
-              ZIP=web.zip
-              if [ -d dist ]; then zip -r "$ZIP" dist >/dev/null
-              elif [ -d build ]; then zip -r "$ZIP" build >/dev/null
-              elif [ -d www ]; then zip -r "$ZIP" www >/dev/null
-              else zip -r "$ZIP" . >/dev/null
-              fi
-              echo "Uploading Web ZIP: $ZIP"
-              HTTP_CODE=$(curl -sS -w "%{http_code}" -o /dev/null -X POST "$API/ci/ingest/$BUILD_ID" \
-                -H "X-Filename: $ZIP" \
-                -H "X-Content-Type: application/zip" \
-                -H "X-Build-Token: $TOKEN" \
-                --data-binary @"$ZIP")
-              echo "Upload finished, HTTP code: $HTTP_CODE"
-              ;;
-            *)
-              echo "Unknown target: $TARGET; skipping ingestion"
-              ;;
-          esac
-
-      # Update status success
-      - name: Update success status
-        if: ${{ success() }}
-        continue-on-error: true
-        run: |
-          if [ -n "${BUILD_ID:-}" ] && [ -n "${{ secrets.BUILD_INGEST_TOKEN }}" ]; then
-            curl -sS -X POST https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes/ci/update/${BUILD_ID} \
-              -H 'Content-Type: application/json' \
-              -H "X-Build-Token: ${{ secrets.BUILD_INGEST_TOKEN }}" \
-              -d '{"status":"success","progress":100}'
-          else
-            echo "Skipping success update; BUILD_ID or TOKEN missing."
+          ZIP=web.zip
+          if [ -d dist ]; then zip -r "$ZIP" dist >/dev/null
+          elif [ -d build ]; then zip -r "$ZIP" build >/dev/null
+          elif [ -d www ]; then zip -r "$ZIP" www >/dev/null
+          else zip -r "$ZIP" . >/dev/null
           fi
-
-      # Update status failed
-      - name: Update failed status
-        if: ${{ failure() }}
-        continue-on-error: true
-        run: |
-          if [ -n "${BUILD_ID:-}" ] && [ -n "${{ secrets.BUILD_INGEST_TOKEN }}" ]; then
-            curl -sS -X POST https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes/ci/update/${BUILD_ID} \
-              -H 'Content-Type: application/json' \
-              -H "X-Build-Token: ${{ secrets.BUILD_INGEST_TOKEN }}" \
-              -d '{"status":"failed","progress":0,"logs":["failed on github actions"]}'
-          else
-            echo "Skipping failed update; BUILD_ID or TOKEN missing."
-          fi
+          echo "Uploading Web ZIP: $ZIP"
+          HTTP_CODE=$(curl -sS -w "%{http_code}" -o /dev/null -X POST "$API/ci/ingest/$BUILD_ID" \
+            -H "X-Filename: $ZIP" \
+            -H "X-Content-Type: application/zip" \
+            -H "X-Build-Token: $TOKEN" \
+            --data-binary @"$ZIP")
+          echo "Upload finished, HTTP code: $HTTP_CODE"
