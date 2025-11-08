@@ -26,7 +26,7 @@ jobs:
       BUILD_ID: ${{ github.event.inputs.build_id || vars.REPO_VAR_BUILD_ID }}
       TARGET: ${{ matrix.target }}
       API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
-      TOKEN: ${{ secrets.SHEG0309030903090309030903090309 }}
+      TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
 
     steps:
       - name: Checkout repository
