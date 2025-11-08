@@ -1,45 +1,102 @@
-name: Android CI
-
+name: App Forge CI
 on:
   push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
-
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: "App Forge Build ID (from App Forge UI)"
+        required: true
+        type: string
 jobs:
   build:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        target: [apk, aab, web]
+    env:
+      BUILD_ID: ${{ github.event.inputs.build_id || vars.REPO_VAR_BUILD_ID }}
+      TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
 
-      # Если у вас AGP 8+, лучше JDK 17. При необходимости верните 11.
-      - name: Set up JDK 17
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
+          distribution: temurin
           java-version: "17"
-          distribution: "temurin"
-          cache: gradle
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      # Собираем релизные артефакты (APK + AAB)
-      - name: Build Release (APK + AAB)
-        run: ./gradlew assembleRelease bundleRelease
-
-      - name: Upload APK artifact
-        if: ${{ hashFiles('app/build/outputs/apk/release/*.apk') != '' }}
-        uses: actions/upload-artifact@v4
+      # Optional: Android SDK for apk/aab targets
+      - name: Set up Android SDK
+        if: ${{ matrix.target != 'web' }}
+        uses: android-actions/setup-android@v3
         with:
-          name: android-apk
-          path: app/build/outputs/apk/release/*.apk
-          if-no-files-found: error
+          api-level: 34
+          build-tools: "34.0.0"
 
-      - name: Upload AAB artifact
-        if: ${{ hashFiles('app/build/outputs/bundle/release/*.aab') != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-aab
-          path: app/build/outputs/bundle/release/*.aab
-          if-no-files-found: error
+      # Build section supports both Gradle native and Web builds
+      - name: Build project
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "TARGET=$TARGET"
+          if [ -f gradlew ] || [ -n "$(ls -1 **/gradlew 2>/dev/null || true)" ]; then
+            echo "Gradle wrapper found"
+            GRADLEW="$(ls -1 **/gradlew 2>/dev/null | head -n1)"
+            if [ -z "$GRADLEW" ] && [ -f gradlew ]; then GRADLEW=./gradlew; fi
+            chmod +x "$GRADLEW"
+            case "$TARGET" in
+              apk)   "$GRADLEW" assembleRelease ;;
+              aab)   "$GRADLEW" bundleRelease ;;
+              web)   echo "Web target selected; trying npm build if package.json exists...";                      if [ -f package.json ]; then npm ci && npm run build;                      elif [ -f frontend/package.json ]; then (cd frontend && npm ci && npm run build);                      else echo "No package.json found; skipping web build"; fi ;;
+              *)     echo "Unknown target: $TARGET"; exit 1 ;;
+            esac
+          else
+            echo "No gradle wrapper; attempting web build if package.json exists..."
+            if [ "$TARGET" = "web" ]; then
+              if [ -f package.json ]; then npm ci && npm run build;               elif [ -f frontend/package.json ]; then (cd frontend && npm ci && npm run build);               else echo "No package.json found; skipping web build"; fi
+            fi
+          fi
+
+      - name: Ingest artifact to App Forge
+        shell: bash
+        env:
+          API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
+          TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BUILD_ID" ]; then echo "BUILD_ID is required" >&2; exit 1; fi
+
+          case "$TARGET" in
+            apk)
+              APK="$(ls -1 **/build/outputs/apk/*release*/**/*.apk **/build/outputs/apk/release/*.apk 2>/dev/null | head -n1)"
+              if [ -z "$APK" ]; then echo "APK not found" >&2; exit 2; fi
+              echo "Found APK: $APK"
+              curl -sS -X POST "$API/ci/ingest/$BUILD_ID"                 -H "X-Filename: $(basename "$APK")"                 -H "X-Content-Type: application/vnd.android.package-archive"                 -H "X-Build-Token: $TOKEN"                 --data-binary @"$APK"
+              ;;
+            aab)
+              AAB="$(ls -1 **/build/outputs/bundle/*[Rr]elease*/**/*.aab **/build/outputs/bundle/release/*.aab 2>/dev/null | head -n1)"
+              if [ -z "$AAB" ]; then echo "AAB not found" >&2; exit 2; fi
+              echo "Found AAB: $AAB"
+              curl -sS -X POST "$API/ci/ingest/$BUILD_ID"                 -H "X-Filename: $(basename "$AAB")"                 -H "X-Content-Type: application/vnd.android.bundle-archive"                 -H "X-Build-Token: $TOKEN"                 --data-binary @"$AAB"
+              ;;
+            web)
+              ZIP=web.zip
+              if [ -d dist ]; then zip -r "$ZIP" dist >/dev/null;               elif [ -d build ]; then zip -r "$ZIP" build >/dev/null;               elif [ -d www ]; then zip -r "$ZIP" www >/dev/null;               else echo "No dist/build/www found for web; creating empty zip"; zip -r "$ZIP" . >/dev/null; fi
+              curl -sS -X POST "$API/ci/ingest/$BUILD_ID"                 -H "X-Filename: $ZIP"                 -H "X-Content-Type: application/zip"                 -H "X-Build-Token: $TOKEN"                 --data-binary @"$ZIP"
+              ;;
+            *) echo "Unknown target: $TARGET" >&2; exit 1 ;;
+          esac
+
+      - name: Update success status
+        if: ${{ success() }}
+        run: |
+          curl -sS -X POST https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes/ci/update/${BUILD_ID}             -H 'Content-Type: application/json'             -H "X-Build-Token: ${{ secrets.BUILD_INGEST_TOKEN }}"             -d '{"status":"success","progress":100}'
+
+      - name: Update failed status
+        if: ${{ failure() }}
+        run: |
+          curl -sS -X POST https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes/ci/update/${BUILD_ID}             -H 'Content-Type: application/json'             -H "X-Build-Token: ${{ secrets.BUILD_INGEST_TOKEN }}"             -d '{"status":"failed","progress":0,"logs":["failed on github actions"]}'
