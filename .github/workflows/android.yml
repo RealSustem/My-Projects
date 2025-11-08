@@ -64,6 +64,13 @@ jobs:
             "build-tools;34.0.0" >/dev/null || true
           echo "Android SDK installed"
 
+
+      - name: Install Gradle (fallback) # 👇 Added
+        if: ${{ !exists('gradlew') }}
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.7
+
       - name: Verify sdk + tools
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
