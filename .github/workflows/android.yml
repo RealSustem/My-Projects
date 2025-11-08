@@ -8,7 +8,7 @@ on:
     inputs:
       build_id:
         description: "App Forge Build ID (from App Forge UI)"
-        required: true
+        required: false
         type: string
 
 jobs:
@@ -23,22 +23,20 @@ jobs:
         target: [apk, aab, web]
 
     env:
-      BUILD_ID: ${{ github.event.inputs.build_id || vars.REPO_VAR_BUILD_ID }}
-      TARGET: ${{ matrix.target }}
-      API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
+      BUILD_ID: ${{ github.event.inputs.build_id || secrets.BUILD_ID }}
       TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
+      API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Debug secrets access
+      - name: Debug secret access
         run: |
-          echo "Checking secret access..."
           if [ -z "${TOKEN:-}" ]; then
-            echo "⚠️ TOKEN is empty or inaccessible (GitHub might be blocking secrets for this workflow)."
+            echo "⚠️ BUILD_INGEST_TOKEN is missing or inaccessible"
           else
-            echo "✅ TOKEN is set (length=${#TOKEN})"
+            echo "✅ TOKEN is available (length=${#TOKEN})"
           fi
 
       - name: Set up Java
@@ -58,124 +56,99 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "🎯 TARGET=$TARGET"
-
-          # Detect gradlew automatically
+          echo "🎯 Building target: $TARGET"
           GRADLEW=""
-          if [ -f gradlew ]; then
-            GRADLEW="./gradlew"
-          else
-            GRADLEW=$(find . -name gradlew | head -n1 || true)
-          fi
+          if [ -f gradlew ]; then GRADLEW="./gradlew"
+          else GRADLEW=$(find . -name gradlew | head -n1 || true); fi
 
           if [ -n "$GRADLEW" ]; then
-            echo "Using Gradle wrapper: $GRADLEW"
             chmod +x "$GRADLEW"
             case "$TARGET" in
-              apk)
-                "$GRADLEW" assembleRelease
-                ;;
-              aab)
-                "$GRADLEW" bundleRelease
-                ;;
+              apk) "$GRADLEW" assembleRelease ;;
+              aab) "$GRADLEW" bundleRelease ;;
               web)
-                echo "🌐 Web target detected"
                 if [ -f package.json ]; then npm ci && npm run build;
                 elif [ -f frontend/package.json ]; then (cd frontend && npm ci && npm run build);
                 else echo "⚠️ No package.json found; skipping web build"; fi
                 ;;
-              *)
-                echo "❌ Unknown target: $TARGET" >&2
-                exit 1
-                ;;
+              *) echo "❌ Unknown target: $TARGET"; exit 1 ;;
             esac
-          else
-            echo "Gradle wrapper not found; trying web build if applicable..."
-            if [ "$TARGET" = "web" ]; then
-              if [ -f package.json ]; then npm ci && npm run build;
-              elif [ -f frontend/package.json ]; then (cd frontend && npm ci && npm run build);
-              else echo "⚠️ No package.json found; skipping web build"; fi
-            fi
+          elif [ "$TARGET" = "web" ]; then
+            if [ -f package.json ]; then npm ci && npm run build;
+            elif [ -f frontend/package.json ]; then (cd frontend && npm ci && npm run build);
+            else echo "⚠️ No package.json found; skipping web build"; fi
           fi
 
-      - name: Ingest artifact to App Forge
+      - name: Prepare artifact
+        id: artifact
         shell: bash
         run: |
           set -euo pipefail
-
-          if [ -z "${BUILD_ID:-}" ]; then
-            echo "❌ BUILD_ID is required for artifact ingestion."
-            exit 1
-          fi
-
-          if [ -z "${TOKEN:-}" ]; then
-            echo "⚠️ BUILD_INGEST_TOKEN secret is missing or inaccessible."
-            echo "Skipping artifact upload..."
-            exit 0
-          fi
-
-          echo "📤 Uploading artifact for target: $TARGET"
-
           case "$TARGET" in
             apk)
-              APK=$(find . -type f -path "*/build/outputs/apk/*release*/*.apk" | head -n1 || true)
-              if [ -z "$APK" ]; then echo "❌ APK not found" >&2; exit 2; fi
-              echo "Found APK: $APK"
-              curl -fsSL -X POST "$API/ci/ingest/$BUILD_ID" \
-                -H "X-Filename: $(basename "$APK")" \
-                -H "X-Content-Type: application/vnd.android.package-archive" \
-                -H "X-Build-Token: $TOKEN" \
-                --data-binary @"$APK"
+              FILE=$(find . -type f -path "*/build/outputs/apk/*release*/*.apk" | head -n1 || true)
               ;;
             aab)
-              AAB=$(find . -type f -path "*/build/outputs/bundle/*[Rr]elease*/*.aab" | head -n1 || true)
-              if [ -z "$AAB" ]; then echo "❌ AAB not found" >&2; exit 2; fi
-              echo "Found AAB: $AAB"
-              curl -fsSL -X POST "$API/ci/ingest/$BUILD_ID" \
-                -H "X-Filename: $(basename "$AAB")" \
-                -H "X-Content-Type: application/octet-stream" \
-                -H "X-Build-Token: $TOKEN" \
-                --data-binary @"$AAB"
+              FILE=$(find . -type f -path "*/build/outputs/bundle/*[Rr]elease*/*.aab" | head -n1 || true)
               ;;
             web)
-              ZIP="web.zip"
-              if [ -d dist ]; then zip -r "$ZIP" dist >/dev/null;
-              elif [ -d build ]; then zip -r "$ZIP" build >/dev/null;
-              elif [ -d www ]; then zip -r "$ZIP" www >/dev/null;
-              else echo "⚠️ No dist/build/www found; zipping current dir"; zip -r "$ZIP" . >/dev/null; fi
-
-              curl -fsSL -X POST "$API/ci/ingest/$BUILD_ID" \
-                -H "X-Filename: $ZIP" \
-                -H "X-Content-Type: application/zip" \
-                -H "X-Build-Token: $TOKEN" \
-                --data-binary @"$ZIP"
-              ;;
-            *)
-              echo "❌ Unknown target: $TARGET" >&2
-              exit 1
+              FILE="web.zip"
+              if [ -d dist ]; then zip -r "$FILE" dist >/dev/null;
+              elif [ -d build ]; then zip -r "$FILE" build >/dev/null;
+              elif [ -d www ]; then zip -r "$FILE" www >/dev/null;
+              else zip -r "$FILE" . >/dev/null; fi
               ;;
           esac
 
-      - name: Update success status
-        if: ${{ success() }}
+          if [ -z "${FILE:-}" ] || [ ! -f "$FILE" ]; then
+            echo "❌ Artifact not found"; exit 2; fi
+          echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+          echo "✅ Artifact ready: $FILE"
+
+      - name: Upload to App Forge
+        if: ${{ env.TOKEN != '' }}
+        shell: bash
         run: |
-          if [ -z "${TOKEN:-}" ]; then
-            echo "⚠️ Skipping success update — missing token"
-            exit 0
-          fi
+          CONTENT_TYPE="application/octet-stream"
+          [[ "$TARGET" == "apk" ]] && CONTENT_TYPE="application/vnd.android.package-archive"
+          [[ "$TARGET" == "web" ]] && CONTENT_TYPE="application/zip"
+
+          curl -fsSL -X POST "$API/ci/ingest/${BUILD_ID}" \
+            -H "X-Filename: $(basename "$FILE_PATH")" \
+            -H "X-Content-Type: $CONTENT_TYPE" \
+            -H "X-Build-Token: $TOKEN" \
+            --data-binary @"$FILE_PATH"
+
+      - name: Upload artifact to GitHub (fallback)
+        if: ${{ env.TOKEN == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-build
+          path: ${{ env.FILE_PATH }}
+          retention-days: 5
+
+      - name: Update success status
+        if: ${{ success() && env.TOKEN != '' }}
+        run: |
           curl -fsSL -X POST "$API/ci/update/${BUILD_ID}" \
             -H 'Content-Type: application/json' \
             -H "X-Build-Token: $TOKEN" \
             -d '{"status":"success","progress":100}'
 
       - name: Update failed status
-        if: ${{ failure() }}
+        if: ${{ failure() && env.TOKEN != '' }}
         run: |
-          if [ -z "${TOKEN:-}" ]; then
-            echo "⚠️ Skipping failed status update — missing token"
-            exit 0
-          fi
           curl -fsSL -X POST "$API/ci/update/${BUILD_ID}" \
             -H 'Content-Type: application/json' \
             -H "X-Build-Token: $TOKEN" \
             -d '{"status":"failed","progress":0,"logs":["failed on GitHub Actions"]}'
+
+      - name: Final summary
+        if: always()
+        run: |
+          echo "🏁 Build finished for $TARGET"
+          if [ -z "${TOKEN:-}" ]; then
+            echo "⚠️ App Forge upload skipped — missing token. Artifact available in GitHub Artifacts."
+          else
+            echo "✅ Build uploaded to App Forge successfully."
+          fi
