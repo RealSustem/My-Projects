@@ -35,9 +35,10 @@ jobs:
           set -euo pipefail
           echo "🎯 Building web..."
           if [ -f package.json ]; then
-            npm ci && npm run build
+            npm ci --prefer-offline --legacy-peer-deps
+            npm run build
           elif [ -f frontend/package.json ]; then
-            (cd frontend && npm ci && npm run build)
+            (cd frontend && npm ci --prefer-offline --legacy-peer-deps && npm run build)
           else
             echo "⚠️ No package.json found, skipping web build"
           fi
@@ -58,7 +59,6 @@ jobs:
           else
             echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
             echo "✅ Web artifact ready: $FILE"
-          fi
 
       - name: Upload Web to App Forge
         if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
@@ -216,4 +216,3 @@ jobs:
           name: aab-build
           path: ${{ env.FILE_PATH }}
           retention-days: 5
-
