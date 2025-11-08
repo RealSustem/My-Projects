@@ -69,6 +69,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$BUILD_ID" ]; then echo "BUILD_ID is required" >&2; exit 1; fi
+          # Guard: missing secret causes opaque failures under set -u
+          if [ -z "${TOKEN:-}" ]; then
+            echo "BUILD_INGEST_TOKEN secret is missing (set repo secret secrets.BUILD_INGEST_TOKEN)." >&2
+            echo "GitHub UI: Settings → Secrets and variables → Actions → New repository secret" >&2
+            exit 3
+          fi
 
           case "$TARGET" in
             apk)
@@ -81,7 +87,7 @@ jobs:
               AAB="$(ls -1 **/build/outputs/bundle/*[Rr]elease*/**/*.aab **/build/outputs/bundle/release/*.aab 2>/dev/null | head -n1)"
               if [ -z "$AAB" ]; then echo "AAB not found" >&2; exit 2; fi
               echo "Found AAB: $AAB"
-              curl -sS -X POST "$API/ci/ingest/$BUILD_ID"                 -H "X-Filename: $(basename "$AAB")"                 -H "X-Content-Type: application/vnd.android.bundle-archive"                 -H "X-Build-Token: $TOKEN"                 --data-binary @"$AAB"
+              curl -sS -X POST "$API/ci/ingest/$BUILD_ID"                 -H "X-Filename: $(basename "$AAB")"                 -H "X-Content-Type: application/octet-stream"                 -H "X-Build-Token: $TOKEN"                 --data-binary @"$AAB"
               ;;
             web)
               ZIP=web.zip
@@ -100,6 +106,3 @@ jobs:
         if: ${{ failure() }}
         run: |
           curl -sS -X POST https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes/ci/update/${BUILD_ID}             -H 'Content-Type: application/json'             -H "X-Build-Token: ${{ secrets.BUILD_INGEST_TOKEN }}"             -d '{"status":"failed","progress":0,"logs":["failed on github actions"]}'
-
-
-          if [ -z "${gTOKEN:-}" ]; then echo "BUILD_INGEST_TOKEN secret is missing (Settings → Secrets and variables → Actions)"; exit 3; fi
