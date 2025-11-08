@@ -11,31 +11,83 @@ on:
         required: false
         type: string
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
+env:
+  API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
+  TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
+  BUILD_ID: ${{ github.event.inputs.build_id || secrets.BUILD_ID }}
 
+jobs:
+
+  build-web:
+    name: Build Web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18"
+
+      - name: Build Web
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "🎯 Building web..."
+          if [ -f package.json ]; then
+            npm ci && npm run build
+          elif [ -f frontend/package.json ]; then
+            (cd frontend && npm ci && npm run build)
+          else
+            echo "⚠️ No package.json found, skipping web build"
+          fi
+
+      - name: Prepare Web artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="web.zip"
+          if [ -d dist ]; then zip -r "$FILE" dist >/dev/null
+          elif [ -d build ]; then zip -r "$FILE" build >/dev/null
+          elif [ -d www ]; then zip -r "$FILE" www >/dev/null
+          else zip -r "$FILE" . >/dev/null; fi
+
+          if [ ! -f "$FILE" ]; then
+            echo "⚠️ Artifact not found, workflow continues"
+            echo "FILE_PATH=" >> "$GITHUB_ENV"
+          else
+            echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+            echo "✅ Web artifact ready: $FILE"
+          fi
+
+      - name: Upload to App Forge
+        if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
+        shell: bash
+        run: |
+          echo "📤 Uploading $FILE_PATH to App Forge..."
+          curl -fsSL -X POST "$API/ci/ingest/${BUILD_ID}" \
+            -H "X-Filename: $(basename "$FILE_PATH")" \
+            -H "X-Content-Type: application/zip" \
+            -H "X-Build-Token: $TOKEN" \
+            --data-binary @"$FILE_PATH"
+
+      - name: Upload Web artifact to GitHub (fallback)
+        if: ${{ env.FILE_PATH != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: ${{ env.FILE_PATH }}
+          retention-days: 5
+
+  build-apk:
+    name: Build APK
+    runs-on: ubuntu-latest
+    needs: build-web
     strategy:
       matrix:
-        target: [apk, aab, web]
-
-    env:
-      API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
-      TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
-      BUILD_ID: ${{ github.event.inputs.build_id || secrets.BUILD_ID }}
-
+        target: [apk]
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Debug variables
-        run: |
-          echo "TOKEN length: ${#TOKEN:-0}"
-          echo "BUILD_ID: ${BUILD_ID:-unset}"
-          echo "TARGET: ${{ matrix.target }}"
+      - uses: actions/checkout@v4
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -44,122 +96,111 @@ jobs:
           java-version: "17"
 
       - name: Set up Android SDK
-        if: ${{ matrix.target != 'web' }}
         uses: android-actions/setup-android@v3
         with:
           api-level: 34
           build-tools: "34.0.0"
 
-      - name: Build project
+      - name: Build APK
         shell: bash
         env:
-          TARGET: ${{ matrix.target }}
+          TARGET: apk
         run: |
           set -euo pipefail
-          echo "🎯 Building target: $TARGET"
+          GRADLEW="./gradlew"
+          if [ ! -f gradlew ]; then GRADLEW=$(find . -name gradlew | head -n1); fi
+          chmod +x "$GRADLEW"
+          "$GRADLEW" assembleRelease
 
-          GRADLEW=""
-          if [ -f gradlew ]; then
-            GRADLEW="./gradlew"
+      - name: Prepare APK artifact
+        shell: bash
+        run: |
+          FILE=$(find . -type f -path "*/build/outputs/apk/*release*/*.apk" | head -n1)
+          if [ -z "$FILE" ]; then
+            echo "⚠️ APK not found"
+            echo "FILE_PATH=" >> "$GITHUB_ENV"
           else
-            GRADLEW=$(find . -name gradlew | head -n1 || true)
+            echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+            echo "✅ APK ready: $FILE"
           fi
 
-          if [ -n "$GRADLEW" ]; then
-            chmod +x "$GRADLEW"
-            case "$TARGET" in
-              apk) "$GRADLEW" assembleRelease ;;
-              aab) "$GRADLEW" bundleRelease ;;
-              web)
-                if [ -f package.json ]; then npm ci && npm run build;
-                elif [ -f frontend/package.json ]; then (cd frontend && npm ci && npm run build);
-                else echo "⚠️ No package.json found; skipping web build"; fi
-                ;;
-              *) echo "❌ Unknown target: $TARGET"; exit 1 ;;
-            esac
-          elif [ "$TARGET" = "web" ]; then
-            if [ -f package.json ]; then npm ci && npm run build;
-            elif [ -f frontend/package.json ]; then (cd frontend && npm ci && npm run build);
-            else echo "⚠️ No package.json found; skipping web build"; fi
-          fi
-
-      - name: Prepare artifact
-        id: artifact
-        shell: bash
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          set -euo pipefail
-          case "$TARGET" in
-            apk)
-              FILE=$(find . -type f -path "*/build/outputs/apk/*release*/*.apk" | head -n1 || true)
-              ;;
-            aab)
-              FILE=$(find . -type f -path "*/build/outputs/bundle/*[Rr]elease*/*.aab" | head -n1 || true)
-              ;;
-            web)
-              FILE="web.zip"
-              if [ -d dist ]; then zip -r "$FILE" dist >/dev/null;
-              elif [ -d build ]; then zip -r "$FILE" build >/dev/null;
-              elif [ -d www ]; then zip -r "$FILE" www >/dev/null;
-              else zip -r "$FILE" . >/dev/null; fi
-              ;;
-          esac
-
-          if [ -z "${FILE:-}" ] || [ ! -f "$FILE" ]; then
-            echo "❌ Artifact not found"; exit 2
-          fi
-          echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
-          echo "✅ Artifact ready: $FILE"
-
-      - name: Upload to App Forge
-        if: ${{ env.TOKEN != '' }}
+      - name: Upload APK to App Forge
+        if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
         shell: bash
         run: |
-          set -euo pipefail
-          echo "📤 Uploading $FILE_PATH to App Forge..."
-          CONTENT_TYPE="application/octet-stream"
-          [[ "$TARGET" == "apk" ]] && CONTENT_TYPE="application/vnd.android.package-archive"
-          [[ "$TARGET" == "web" ]] && CONTENT_TYPE="application/zip"
-
           curl -fsSL -X POST "$API/ci/ingest/${BUILD_ID}" \
             -H "X-Filename: $(basename "$FILE_PATH")" \
-            -H "X-Content-Type: $CONTENT_TYPE" \
+            -H "X-Content-Type: application/vnd.android.package-archive" \
             -H "X-Build-Token: $TOKEN" \
             --data-binary @"$FILE_PATH"
 
-      - name: Upload artifact to GitHub (fallback)
-        if: ${{ env.TOKEN == '' }}
+      - name: Upload APK artifact to GitHub (fallback)
+        if: ${{ env.FILE_PATH != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}-build
+          name: apk-build
           path: ${{ env.FILE_PATH }}
           retention-days: 5
 
-      - name: Update success status
-        if: ${{ success() && env.TOKEN != '' }}
-        shell: bash
-        run: |
-          curl -fsSL -X POST "$API/ci/update/${BUILD_ID}" \
-            -H 'Content-Type: application/json' \
-            -H "X-Build-Token: $TOKEN" \
-            -d '{"status":"success","progress":100}'
+  build-aab:
+    name: Build AAB
+    runs-on: ubuntu-latest
+    needs: build-web
+    strategy:
+      matrix:
+        target: [aab]
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Update failed status
-        if: ${{ failure() && env.TOKEN != '' }}
-        shell: bash
-        run: |
-          curl -fsSL -X POST "$API/ci/update/${BUILD_ID}" \
-            -H 'Content-Type: application/json' \
-            -H "X-Build-Token: $TOKEN" \
-            -d '{"status":"failed","progress":0,"logs":["failed on GitHub Actions"]}'
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
 
-      - name: Final summary
-        if: always()
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 34
+          build-tools: "34.0.0"
+
+      - name: Build AAB
+        shell: bash
+        env:
+          TARGET: aab
+        run: |
+          set -euo pipefail
+          GRADLEW="./gradlew"
+          if [ ! -f gradlew ]; then GRADLEW=$(find . -name gradlew | head -n1); fi
+          chmod +x "$GRADLEW"
+          "$GRADLEW" bundleRelease
+
+      - name: Prepare AAB artifact
         shell: bash
         run: |
-          echo "🏁 Build finished for $TARGET"
-          if [ -z "${TOKEN:-}" ]; then
-            echo "⚠️ App Forge upload skipped — missing token. Artifact available in GitHub Artifacts."
+          FILE=$(find . -type f -path "*/build/outputs/bundle/*[Rr]elease*/*.aab" | head -n1)
+          if [ -z "$FILE" ]; then
+            echo "⚠️ AAB not found"
+            echo "FILE_PATH=" >> "$GITHUB_ENV"
           else
-            echo "✅ Build uploaded to App Forge successfully."
+            echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+            echo "✅ AAB ready: $FILE"
+          fi
+
+      - name: Upload AAB to App Forge
+        if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
+        shell: bash
+        run: |
+          curl -fsSL -X POST "$API/ci/ingest/${BUILD_ID}" \
+            -H "X-Filename: $(basename "$FILE_PATH")" \
+            -H "X-Content-Type: application/octet-stream" \
+            -H "X-Build-Token: $TOKEN" \
+            --data-binary @"$FILE_PATH"
+
+      - name: Upload AAB artifact to GitHub (fallback)
+        if: ${{ env.FILE_PATH != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: aab-build
+          path: ${{ env.FILE_PATH }}
+          retention-days: 5
