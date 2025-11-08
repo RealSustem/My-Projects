@@ -35,11 +35,13 @@ jobs:
         if: ${{ matrix.target != 'web' }}
         uses: android-actions/setup-android@v3
         with:
-          api-level: 34
-          build-tools: "34.0.0"
+          cmdline-tools-version: "9.0.0"
+          packages: "platform-tools,platforms;android-34,build-tools;34.0.0"
+          accept-android-sdk-licenses: true
 
       - name: Build project
         shell: bash
+        continue-on-error: ${{ matrix.target == 'web' }}
         run: |
           set -euo pipefail
           shopt -s globstar
@@ -95,20 +97,24 @@ jobs:
             apk)
               APK=$(ls -1 **/build/outputs/apk/*release*/**/*.apk **/build/outputs/apk/release/*.apk 2>/dev/null | head -n1)
               [ -z "$APK" ] && { echo "APK not found"; exit 2; }
-              curl --fail -sS -X POST "$API/ci/ingest/$BUILD_ID" \
+              echo "Uploading APK: $APK"
+              HTTP_CODE=$(curl -w "%{http_code}" -sS -o /dev/null -X POST "$API/ci/ingest/$BUILD_ID" \
                 -H "X-Filename: $(basename "$APK")" \
                 -H "X-Content-Type: application/vnd.android.package-archive" \
                 -H "X-Build-Token: $TOKEN" \
-                --data-binary @"$APK"
+                --data-binary @"$APK")
+              [ "$HTTP_CODE" -ge 400 ] && { echo "Failed upload, HTTP $HTTP_CODE"; exit 2; }
               ;;
             aab)
               AAB=$(ls -1 **/build/outputs/bundle/*[Rr]elease*/**/*.aab **/build/outputs/bundle/release/*.aab 2>/dev/null | head -n1)
               [ -z "$AAB" ] && { echo "AAB not found"; exit 2; }
-              curl --fail -sS -X POST "$API/ci/ingest/$BUILD_ID" \
+              echo "Uploading AAB: $AAB"
+              HTTP_CODE=$(curl -w "%{http_code}" -sS -o /dev/null -X POST "$API/ci/ingest/$BUILD_ID" \
                 -H "X-Filename: $(basename "$AAB")" \
                 -H "X-Content-Type: application/octet-stream" \
                 -H "X-Build-Token: $TOKEN" \
-                --data-binary @"$AAB"
+                --data-binary @"$AAB")
+              [ "$HTTP_CODE" -ge 400 ] && { echo "Failed upload, HTTP $HTTP_CODE"; exit 2; }
               ;;
             web)
               ZIP=web.zip
@@ -117,11 +123,13 @@ jobs:
               elif [ -d www ]; then zip -r "$ZIP" www >/dev/null
               else zip -r "$ZIP" . >/dev/null
               fi
-              curl --fail -sS -X POST "$API/ci/ingest/$BUILD_ID" \
+              echo "Uploading Web ZIP: $ZIP"
+              HTTP_CODE=$(curl -w "%{http_code}" -sS -o /dev/null -X POST "$API/ci/ingest/$BUILD_ID" \
                 -H "X-Filename: $ZIP" \
                 -H "X-Content-Type: application/zip" \
                 -H "X-Build-Token: $TOKEN" \
-                --data-binary @"$ZIP"
+                --data-binary @"$ZIP")
+              [ "$HTTP_CODE" -ge 400 ] && { echo "Failed upload, HTTP $HTTP_CODE"; exit 2; }
               ;;
             *)
               echo "Unknown target: $TARGET" >&2
