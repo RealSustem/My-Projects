@@ -64,21 +64,21 @@ jobs:
 
       - name: Upload all APKs
         if: success()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: all-apks
           path: app/build/outputs/apk/**/*
 
-      - name: Upload AABs (if any)
+      - name: Upload all AABs (if any)
         if: success()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: all-aabs
           path: app/build/outputs/bundle/**/*
 
       - name: Upload test results
         if: success()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: test-results
           path: app/build/test-results/testDebugUnitTest/
