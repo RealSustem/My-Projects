@@ -100,3 +100,6 @@ jobs:
         if: ${{ failure() }}
         run: |
           curl -sS -X POST https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes/ci/update/${BUILD_ID}             -H 'Content-Type: application/json'             -H "X-Build-Token: ${{ secrets.BUILD_INGEST_TOKEN }}"             -d '{"status":"failed","progress":0,"logs":["failed on github actions"]}'
+
+
+          if [ -z "${gTOKEN:-}" ]; then echo "BUILD_INGEST_TOKEN secret is missing (Settings → Secrets and variables → Actions)"; exit 3; fi
