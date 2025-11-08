@@ -1,4 +1,4 @@
-name: App Forge CI - Flexible Android SDK Version
+name: App Forge CI
 
 on:
   push:
@@ -7,174 +7,195 @@ on:
   workflow_dispatch:
     inputs:
       build_id:
-        description: "App Forge Build ID"
-        required: true
+        description: "App Forge Build ID (from App Forge UI)"
+        required: false
         type: string
 
-# Меняй здесь версии (только эти 2 строчки)
 env:
   API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
   TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
-  BUILD_ID: ${{ github.event.inputs.build_id }}
-  ANDROID_BUILDTOOLS_VERSION: "33.0.2"      # <- поменяй версию build-tools тут
-  ANDROID_PLATFORM: "android-33"            # <- поменя платформу (например android-33, android-34)
+  BUILD_ID: ${{ github.event.inputs.build_id || secrets.BUILD_ID }}
 
 jobs:
-  build-all:
+
+  build-web:
+    name: Build Web
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js 18
+      - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
           node-version: "18"
 
-      - name: Set up Java 17 (Temurin)
+      - name: Install Dependencies & Build Web
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "🎯 Installing dependencies..."
+          if [ -f package.json ]; then
+            npm ci --prefer-offline --legacy-peer-deps
+            npm run build
+          elif [ -f frontend/package.json ]; then
+            (cd frontend && npm ci --prefer-offline --legacy-peer-deps && npm run build)
+          else
+            echo "⚠️ No package.json found, skipping web build"
+          fi
+
+      - name: Prepare Web artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="web.zip"
+          if [ -d dist ]; then zip -r "$FILE" dist >/dev/null
+          elif [ -d build ]; then zip -r "$FILE" build >/dev/null
+          elif [ -d www ]; then zip -r "$FILE" www >/dev/null
+          else zip -r "$FILE" . >/dev/null; fi
+
+          if [ ! -f "$FILE" ]; then
+            echo "FILE_PATH=" >> "$GITHUB_ENV"
+          else
+            echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+            echo "✅ Web artifact ready: $FILE"
+
+      - name: Upload Web to App Forge
+        if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
+        shell: bash
+        run: |
+          echo "📤 Uploading $FILE_PATH to App Forge..."
+          curl -fsSL -X POST "$API/ci/ingest/${BUILD_ID}" \
+            -H "X-Filename: $(basename "$FILE_PATH")" \
+            -H "X-Content-Type: application/zip" \
+            -H "X-Build-Token: $TOKEN" \
+            --data-binary @"$FILE_PATH" || echo "⚠️ Upload failed. Check TOKEN or BUILD_ID."
+
+      - name: Upload Web artifact to GitHub
+        if: ${{ env.FILE_PATH != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: ${{ env.FILE_PATH }}
+          retention-days: 5
+
+  build-apk:
+    name: Build APK
+    runs-on: ubuntu-latest
+    needs: build-web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK (parametrized)
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: "latest"
-          packages: |
-            platform-tools
-            cmdline-tools;latest
-            build-tools;${{ env.ANDROID_BUILDTOOLS_VERSION }}
-            platforms;${{ env.ANDROID_PLATFORM }}
+          packages:
+            - platform-tools
+            - cmdline-tools;latest
+            - build-tools;33.0.2
+            - platforms;android-33
           accept-android-sdk-licenses: true
 
-      - name: Show Android SDK (debug)
-        shell: bash
-        run: |
-          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/android-sdk}}"
-          echo "Using SDK path: $SDK"
-          echo "Requested build-tools: $ANDROID_BUILDTOOLS_VERSION"
-          echo "Requested platform: $ANDROID_PLATFORM"
-          ls -la "$SDK" || true
-          ls -la "$SDK/platforms" || true
-          ls -la "$SDK/build-tools" || true
-
-      - name: Install frontend deps (if any) - tolerant
-        shell: bash
-        run: |
-          set -eu -o pipefail
-          if [ -f package.json ]; then
-            npm ci --prefer-offline --legacy-peer-deps || true
-          elif [ -f frontend/package.json ]; then
-            (cd frontend && npm ci --prefer-offline --legacy-peer-deps) || true
-          else
-            echo "No frontend package.json; skipping"
-
-      - name: Build Web, APK, AAB (tolerant)
-        shell: bash
-        env:
-          ANDROID_BUILDTOOLS_VERSION: ${{ env.ANDROID_BUILDTOOLS_VERSION }}
-          ANDROID_PLATFORM: ${{ env.ANDROID_PLATFORM }}
-        run: |
-          set -eu -o pipefail
-          WEB_OK=0; APK_OK=0; AAB_OK=0
-
-          echo "=== WEB build ==="
-          if [ -f package.json ]; then
-            npm run build || WEB_OK=$?
-          elif [ -f frontend/package.json ]; then
-            (cd frontend && npm run build) || WEB_OK=$?
-          else
-            echo "No web project"
-            WEB_OK=2
-          fi
-          echo "WEB_OK=$WEB_OK" >> $GITHUB_ENV
-
-          # find gradlew
-          GRADLEW=""
-          if [ -f ./gradlew ]; then GRADLEW=./gradlew; else GRADLEW=$(find . -maxdepth 4 -type f -name gradlew | head -n1 || true); fi
-          if [ -n "$GRADLEW" ]; then chmod +x "$GRADLEW"; fi
-
-          echo "=== APK build ==="
-          if [ -n "$GRADLEW" ]; then
-            "$GRADLEW" assembleRelease || APK_OK=$?
-          else
-            echo "gradlew not found; skipping APK"
-            APK_OK=3
-          fi
-          echo "APK_OK=$APK_OK" >> $GITHUB_ENV
-
-          echo "=== AAB build ==="
-          if [ -n "$GRADLEW" ]; then
-            "$GRADLEW" bundleRelease || AAB_OK=$?
-          else
-            echo "gradlew not found; skipping AAB"
-            AAB_OK=3
-          fi
-          echo "AAB_OK=$AAB_OK" >> $GITHUB_ENV
-
-      - name: Prepare artifacts (safe)
+      - name: Build APK
         shell: bash
         run: |
           set -euo pipefail
-          WEB_ZIP=web.zip
-          if [ -d dist ]; then zip -r "$WEB_ZIP" dist >/dev/null
-          elif [ -d build ]; then zip -r "$WEB_ZIP" build >/dev/null
-          elif [ -d www ]; then zip -r "$WEB_ZIP" www >/dev/null
-          else echo "{}" > empty_web.json; zip -r "$WEB_ZIP" empty_web.json >/dev/null; fi
-          echo "WEB_ARTIFACT=$WEB_ZIP" >> $GITHUB_ENV
+          GRADLEW="./gradlew"
+          if [ ! -f gradlew ]; then GRADLEW=$(find . -name gradlew | head -n1); fi
+          chmod +x "$GRADLEW"
+          "$GRADLEW" assembleRelease
 
-          APK_FILE=$(find . -type f -path "*/build/outputs/apk/*release*/*.apk" | head -n1 || true)
-          echo "APK_ARTIFACT=$APK_FILE" >> $GITHUB_ENV
-
-          AAB_FILE=$(find . -type f -path "*/build/outputs/bundle/*[Rr]elease*/*.aab" | head -n1 || true)
-          echo "AAB_ARTIFACT=$AAB_FILE" >> $GITHUB_ENV
-
-      - name: Upload to App Forge (retries) — only if TOKEN set
-        if: ${{ env.TOKEN != '' }}
+      - name: Prepare APK artifact
         shell: bash
         run: |
-          set -euo pipefail
-          API_URL="$API/ci/ingest/${BUILD_ID}"
-          upload() {
-            local p="$1"; local ct="$2"
-            if [ -z "$p" ] || [ ! -f "$p" ]; then echo "Skip upload (missing) $p"; return 0; fi
-            for i in 1 2 3; do
-              curl -S --fail -X POST "$API_URL" \
-                -H "X-Filename: $(basename "$p")" \
-                -H "X-Content-Type: $ct" \
-                -H "X-Build-Token: $TOKEN" \
-                --data-binary @"$p" && { echo "Uploaded $p"; return 0; } || echo "Attempt $i failed for $p"
-              sleep $((i*2))
-            done
-            echo "Upload permanently failed for $p"
-          }
-          upload "${WEB_ARTIFACT:-web.zip}" "application/zip"
-          upload "${APK_ARTIFACT:-}" "application/vnd.android.package-archive"
-          upload "${AAB_ARTIFACT:-}" "application/octet-stream"
+          FILE=$(find . -type f -path "*/build/outputs/apk/*release*/*.apk" | head -n1)
+          if [ -z "$FILE" ]; then
+            echo "FILE_PATH=" >> "$GITHUB_ENV"
+          else
+            echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+            echo "✅ APK ready: $FILE"
 
-      - name: Upload fallback artifacts
+      - name: Upload APK to App Forge
+        if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
+        shell: bash
+        run: |
+          curl -fsSL -X POST "$API/ci/ingest/${BUILD_ID}" \
+            -H "X-Filename: $(basename "$FILE_PATH")" \
+            -H "X-Content-Type: application/vnd.android.package-archive" \
+            -H "X-Build-Token: $TOKEN" \
+            --data-binary @"$FILE_PATH" || echo "⚠️ Upload failed. Check TOKEN or BUILD_ID."
+
+      - name: Upload APK artifact to GitHub
+        if: ${{ env.FILE_PATH != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: appforge-all
-          path: |
-            ${{ env.WEB_ARTIFACT }}
-            ${{ env.APK_ARTIFACT }}
-            ${{ env.AAB_ARTIFACT }}
-          retention-days: 7
+          name: apk-build
+          path: ${{ env.FILE_PATH }}
+          retention-days: 5
 
-      - name: Final summary (always)
-        if: always()
+  build-aab:
+    name: Build AAB
+    runs-on: ubuntu-latest
+    needs: build-web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: "latest"
+          packages:
+            - platform-tools
+            - cmdline-tools;latest
+            - build-tools;33.0.2
+            - platforms;android-33
+          accept-android-sdk-licenses: true
+
+      - name: Build AAB
         shell: bash
         run: |
-          echo "Build ID: ${BUILD_ID}"
-          echo "Requested build-tools: ${ANDROID_BUILDTOOLS_VERSION}"
-          echo "Requested platform: ${ANDROID_PLATFORM}"
-          echo "WEB_OK=${WEB_OK:-unknown}"
-          echo "APK_OK=${APK_OK:-unknown}"
-          echo "AAB_OK=${AAB_OK:-unknown}"
-          echo "Artifacts:"
-          echo " - WEB: ${WEB_ARTIFACT:-(none)}"
-          echo " - APK: ${APK_ARTIFACT:-(none)}"
-          echo " - AAB: ${AAB_ARTIFACT:-(none)}"
-          exit 0
+          set -euo pipefail
+          GRADLEW="./gradlew"
+          if [ ! -f gradlew ]; then GRADLEW=$(find . -name gradlew | head -n1); fi
+          chmod +x "$GRADLEW"
+          "$GRADLEW" bundleRelease
+
+      - name: Prepare AAB artifact
+        shell: bash
+        run: |
+          FILE=$(find . -type f -path "*/build/outputs/bundle/*[Rr]elease*/*.aab" | head -n1)
+          if [ -z "$FILE" ]; then
+            echo "FILE_PATH=" >> "$GITHUB_ENV"
+          else
+            echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+            echo "✅ AAB ready: $FILE"
+
+      - name: Upload AAB to App Forge
+        if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
+        shell: bash
+        run: |
+          curl -fsSL -X POST "$API/ci/ingest/${BUILD_ID}" \
+            -H "X-Filename: $(basename "$FILE_PATH")" \
+            -H "X-Content-Type: application/octet-stream" \
+            -H "X-Build-Token: $TOKEN" \
+            --data-binary @"$FILE_PATH" || echo "⚠️ Upload failed. Check TOKEN or BUILD_ID."
+
+      - name: Upload AAB artifact to GitHub
+        if: ${{ env.FILE_PATH != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: aab-build
+          path: ${{ env.FILE_PATH }}
+          retention-days: 5
