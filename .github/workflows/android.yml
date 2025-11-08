@@ -27,11 +27,16 @@ jobs:
       API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
       TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
       ANDROID_HOME: /usr/local/lib/android/sdk
-      PATH: /usr/local/lib/android/sdk/cmdline-tools/latest/bin:/usr/local/lib/android/sdk/platform-tools:$PATH
+      PATH: /usr/local/lib/android/sdk/cmdline-tools/latest/bin:/usr/local/lib/android/sdk/platform-tools:/usr/local/lib/android/sdk/build-tools/34.0.0:$PATH
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Prepare system (install tar, zip, wget, unzip, node, etc.)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y tar zip unzip wget curl lib32stdc++6 lib32z1
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -39,14 +44,19 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Android SDK (manually)
+      - name: Install Node.js (for web)
+        if: ${{ matrix.target == 'web' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Manually install Android SDK
         if: ${{ matrix.target != 'web' }}
-        shell: bash
         run: |
           set -eux
           mkdir -p $ANDROID_HOME/cmdline-tools
           cd $ANDROID_HOME/cmdline-tools
-          # Стабильная версия командных инструментов
+          echo "📦 Downloading Android command line tools..."
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
           unzip -q cmdline-tools.zip
           mv cmdline-tools latest
@@ -56,21 +66,13 @@ jobs:
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "tools" >/dev/null
-          echo "✅ Android SDK установлена"
-
-      - name: Install Node.js
-        if: ${{ matrix.target == 'web' }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
+          echo "✅ Android SDK installed successfully"
 
       - name: Install dependencies
-        shell: bash
         run: |
           set -e
           echo "Installing dependencies for target: $TARGET"
           if [ -f gradlew ] || [ -n "$(ls -1 **/gradlew 2>/dev/null || true)" ]; then
-            echo "Gradle project detected"
             GRADLEW="$(ls -1 **/gradlew 2>/dev/null | head -n1)"
             [ -z "$GRADLEW" ] && GRADLEW=./gradlew
             chmod +x "$GRADLEW"
@@ -82,10 +84,9 @@ jobs:
           fi
 
       - name: Build project
-        shell: bash
         run: |
           set -e
-          echo "Building for target: $TARGET"
+          echo "🚀 Building target: $TARGET"
           if [ -f gradlew ] || [ -n "$(ls -1 **/gradlew 2>/dev/null || true)" ]; then
             GRADLEW="$(ls -1 **/gradlew 2>/dev/null | head -n1)"
             [ -z "$GRADLEW" ] && GRADLEW=./gradlew
@@ -93,7 +94,7 @@ jobs:
             case "$TARGET" in
               apk) "$GRADLEW" assembleRelease ;;
               aab) "$GRADLEW" bundleRelease ;;
-              *) echo "Unknown gradle target $TARGET" ;;
+              *) echo "Unknown gradle target: $TARGET" ;;
             esac
           elif [ "$TARGET" = "web" ]; then
             if [ -f package.json ]; then
@@ -105,9 +106,9 @@ jobs:
 
       - name: Upload artifact to App Forge
         if: ${{ env.TOKEN != '' }}
-        shell: bash
         run: |
           set -e
+          echo "📤 Uploading build for $TARGET"
           case "$TARGET" in
             apk)
               APK="$(ls -1 **/build/outputs/apk/*release*/**/*.apk **/build/outputs/apk/release/*.apk 2>/dev/null | head -n1)"
