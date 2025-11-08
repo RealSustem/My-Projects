@@ -14,6 +14,7 @@ on:
 env:
   BUILD_ID: ${{ github.event.inputs.build_id || vars.REPO_VAR_BUILD_ID }}
   API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
+  JSON_URL: https://example.com/yourfile.json   # <-- здесь укажи реальный URL JSON
 
 # ------------------------------------------------------------------
 # JOB: build_apk
@@ -23,15 +24,17 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
-      JSON_URL: ${{ secrets.BUILD_JSON_URL || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Download JSON
+        run: |
+          curl -sS -O $JSON_URL
+
       - name: Prepare runner (install utils)
         run: |
           sudo apt-get update -y
-          # tar, unzip, wget, curl, zip — всё ставим сразу
           sudo apt-get install -y tar unzip wget curl zip lib32stdc++6 lib32z1
 
       - name: Set up Java (for Gradle)
@@ -49,21 +52,23 @@ jobs:
           sudo chown -R $USER:$USER $ANDROID_HOME
           mkdir -p $ANDROID_HOME/cmdline-tools
           cd $ANDROID_HOME/cmdline-tools
-          # фиксированная версия commandlinetools (рабочая)
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
           unzip -q cmdline-tools.zip
-          # в zip обычно папка cmdline-tools, перемещаем в latest
           mv cmdline-tools latest || true
-          # добавляем в PATH корректно (через GITHUB_ENV чтобы не перезаписать системный PATH)
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH" >> $GITHUB_ENV
-          # соглашаемся с лицензиями и ставим нужные пакеты
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=${ANDROID_HOME} --licenses >/dev/null || true
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=${ANDROID_HOME} \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0" >/dev/null || true
           echo "Android SDK installed"
+
+      - name: Install Gradle (fallback if no gradlew)
+        if: ${{ !exists('gradlew') }}
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.7
 
       - name: Verify sdk + tools
         run: |
@@ -72,17 +77,6 @@ jobs:
           which tar || true
           tar --version || true
           adb --version || true
-
-      - name: Download JSON (optional)
-        if: ${{ env.JSON_URL != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Downloading JSON from $JSON_URL"
-          curl -fSL "$JSON_URL" -o build-config.json
-          echo "Downloaded build-config.json:"
-          ls -l build-config.json
-          head -n 40 build-config.json || true
 
       - name: Build APK (Gradle)
         shell: bash
@@ -117,17 +111,20 @@ jobs:
             -H "X-Build-Token: $TOKEN" \
             --data-binary @"$APK"
 
-  # ------------------------------------------------------------------
-  # JOB: build_aab
-  # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# JOB: build_aab
+# ------------------------------------------------------------------
   build_aab:
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
-      JSON_URL: ${{ secrets.BUILD_JSON_URL || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download JSON
+        run: |
+          curl -sS -O $JSON_URL
 
       - name: Prepare runner (install utils)
         run: |
@@ -161,16 +158,11 @@ jobs:
             "build-tools;34.0.0" >/dev/null || true
           echo "Android SDK installed"
 
-      - name: Download JSON (optional)
-        if: ${{ env.JSON_URL != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Downloading JSON from $JSON_URL"
-          curl -fSL "$JSON_URL" -o build-config.json
-          echo "Downloaded build-config.json:"
-          ls -l build-config.json
-          head -n 40 build-config.json || true
+      - name: Install Gradle (fallback if no gradlew)
+        if: ${{ !exists('gradlew') }}
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.7
 
       - name: Build AAB (Gradle)
         shell: bash
@@ -205,33 +197,25 @@ jobs:
             -H "X-Build-Token: $TOKEN" \
             --data-binary @"$AAB"
 
-  # ------------------------------------------------------------------
-  # JOB: build_web
-  # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# JOB: build_web
+# ------------------------------------------------------------------
   build_web:
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
-      JSON_URL: ${{ secrets.BUILD_JSON_URL || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download JSON
+        run: |
+          curl -sS -O $JSON_URL
 
       - name: Prepare runner (install utils)
         run: |
           sudo apt-get update -y
           sudo apt-get install -y tar unzip wget curl zip
-
-      - name: Download JSON (optional)
-        if: ${{ env.JSON_URL != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Downloading JSON from $JSON_URL"
-          curl -fSL "$JSON_URL" -o build-config.json
-          echo "Downloaded build-config.json:"
-          ls -l build-config.json
-          head -n 40 build-config.json || true
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -248,7 +232,6 @@ jobs:
             (cd frontend && npm ci)
           else
             echo "No package.json found; skipping npm install"
-          fi
 
       - name: Build web
         shell: bash
@@ -260,7 +243,6 @@ jobs:
             (cd frontend && npm run build)
           else
             echo "No package.json found; skipping web build"
-          fi
 
       - name: Upload web to App Forge (skip if no token)
         if: ${{ env.TOKEN != '' }}
