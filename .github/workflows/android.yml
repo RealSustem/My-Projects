@@ -36,7 +36,11 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: "platform-tools,platforms;android-34,build-tools;34.0.0"
+          cmdline-tools-version: latest
+          packages: |
+            platform-tools
+            platforms;android-34
+            build-tools;34.0.0
           accept-android-sdk-licenses: true
 
       - name: Cache Gradle
@@ -76,13 +80,11 @@ jobs:
             echo "APK not found; skipping upload"
           else
             echo "Uploading APK: $APK"
-            HTTP_CODE=$(curl -sS -w "%{http_code}" -o /dev/null -X POST "$API/ci/ingest/$BUILD_ID" \
+            curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
               -H "X-Filename: $(basename "$APK")" \
               -H "X-Content-Type: application/vnd.android.package-archive" \
               -H "X-Build-Token: $TOKEN" \
-              --data-binary @"$APK")
-            echo "Upload finished, HTTP code: $HTTP_CODE"
-          fi
+              --data-binary @"$APK"
 
 # -------------------------------
 # AAB job
@@ -104,7 +106,11 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: "platform-tools,platforms;android-34,build-tools;34.0.0"
+          cmdline-tools-version: latest
+          packages: |
+            platform-tools
+            platforms;android-34
+            build-tools;34.0.0
           accept-android-sdk-licenses: true
 
       - name: Cache Gradle
@@ -144,13 +150,11 @@ jobs:
             echo "AAB not found; skipping upload"
           else
             echo "Uploading AAB: $AAB"
-            HTTP_CODE=$(curl -sS -w "%{http_code}" -o /dev/null -X POST "$API/ci/ingest/$BUILD_ID" \
+            curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
               -H "X-Filename: $(basename "$AAB")" \
               -H "X-Content-Type: application/octet-stream" \
               -H "X-Build-Token: $TOKEN" \
-              --data-binary @"$AAB")
-            echo "Upload finished, HTTP code: $HTTP_CODE"
-          fi
+              --data-binary @"$AAB"
 
 # -------------------------------
 # Web job
@@ -211,9 +215,8 @@ jobs:
           else zip -r "$ZIP" . >/dev/null
           fi
           echo "Uploading Web ZIP: $ZIP"
-          HTTP_CODE=$(curl -sS -w "%{http_code}" -o /dev/null -X POST "$API/ci/ingest/$BUILD_ID" \
+          curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
             -H "X-Filename: $ZIP" \
             -H "X-Content-Type: application/zip" \
             -H "X-Build-Token: $TOKEN" \
-            --data-binary @"$ZIP")
-          echo "Upload finished, HTTP code: $HTTP_CODE"
+            --data-binary @"$ZIP"
