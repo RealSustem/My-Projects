@@ -28,7 +28,7 @@ jobs:
         with:
           node-version: "18"
 
-      - name: Install Web Dependencies & Build
+      - name: Build Web
         shell: bash
         run: |
           set -euo pipefail
@@ -39,22 +39,35 @@ jobs:
             (cd frontend && npm ci --prefer-offline --legacy-peer-deps && npm run build)
           else
             echo "⚠️ No package.json found, skipping web build"
+          fi
 
-      - name: Prepare Web Artifact
+      - name: Prepare Web artifact
         shell: bash
         run: |
+          set -euo pipefail
           FILE="web.zip"
-          if [ -d dist ]; then zip -r "$FILE" dist >/dev/null
-          elif [ -d build ]; then zip -r "$FILE" build >/dev/null
-          elif [ -d www ]; then zip -r "$FILE" www >/dev/null
-          else zip -r "$FILE" . >/dev/null; fi
+          if [ -d dist ]; then
+            zip -r "$FILE" dist >/dev/null
+          elif [ -d build ]; then
+            zip -r "$FILE" build >/dev/null
+          elif [ -d www ]; then
+            zip -r "$FILE" www >/dev/null
+          else
+            zip -r "$FILE" . >/dev/null
+          fi
+
           if [ -f "$FILE" ]; then
             echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+          else
+            echo "FILE_PATH=" >> "$GITHUB_ENV"
+          fi
 
       - name: Upload Web to App Forge
         if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
         shell: bash
         run: |
+          set -euo pipefail
+          echo "📤 Uploading $FILE_PATH to App Forge..."
           curl -fsSL -X POST "$API/ci/ingest/${BUILD_ID}" \
             -H "X-Filename: $(basename "$FILE_PATH")" \
             -H "X-Content-Type: application/zip" \
@@ -83,16 +96,24 @@ jobs:
         run: |
           set -euo pipefail
           GRADLEW="./gradlew"
-          if [ ! -f gradlew ]; then GRADLEW=$(find . -name gradlew | head -n1); fi
+          if [ ! -f gradlew ]; then
+            GRADLEW=$(find . -name gradlew | head -n1)
+          fi
           chmod +x "$GRADLEW"
           "$GRADLEW" assembleRelease
           FILE=$(find . -type f -path "*/build/outputs/apk/*release*/*.apk" | head -n1)
-          if [ -f "$FILE" ]; then echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+          if [ -f "$FILE" ]; then
+            echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+          else
+            echo "FILE_PATH=" >> "$GITHUB_ENV"
+          fi
 
       - name: Upload APK to App Forge
         if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
         shell: bash
         run: |
+          set -euo pipefail
+          echo "📤 Uploading APK $FILE_PATH..."
           curl -fsSL -X POST "$API/ci/ingest/${BUILD_ID}" \
             -H "X-Filename: $(basename "$FILE_PATH")" \
             -H "X-Content-Type: application/vnd.android.package-archive" \
@@ -104,16 +125,24 @@ jobs:
         run: |
           set -euo pipefail
           GRADLEW="./gradlew"
-          if [ ! -f gradlew ]; then GRADLEW=$(find . -name gradlew | head -n1); fi
+          if [ ! -f gradlew ]; then
+            GRADLEW=$(find . -name gradlew | head -n1)
+          fi
           chmod +x "$GRADLEW"
           "$GRADLEW" bundleRelease
           FILE=$(find . -type f -path "*/build/outputs/bundle/*[Rr]elease*/*.aab" | head -n1)
-          if [ -f "$FILE" ]; then echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+          if [ -f "$FILE" ]; then
+            echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
+          else
+            echo "FILE_PATH=" >> "$GITHUB_ENV"
+          fi
 
       - name: Upload AAB to App Forge
         if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
         shell: bash
         run: |
+          set -euo pipefail
+          echo "📤 Uploading AAB $FILE_PATH..."
           curl -fsSL -X POST "$API/ci/ingest/${BUILD_ID}" \
             -H "X-Filename: $(basename "$FILE_PATH")" \
             -H "X-Content-Type: application/octet-stream" \
