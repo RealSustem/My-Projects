@@ -1,160 +1,84 @@
-name: App Forge CI
+name: Full Android Build
 
 on:
   push:
-    branches: ["main"]
-    tags: ["v*"]
-  workflow_dispatch:
-    inputs:
-      build_id:
-        description: "App Forge Build ID (from App Forge UI)"
-        required: false
-        type: string
-
-env:
-  API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
-  TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
-  BUILD_ID: ${{ github.event.inputs.build_id || secrets.BUILD_ID }}
+    branches:
+      - main
+  pull_request:
 
 jobs:
-  build-all:
-    name: Build Web + APK + AAB
+  build:
     runs-on: ubuntu-latest
+
+    env:
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      GRADLE_USER_HOME: ${{ github.workspace }}/.gradle
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: "18"
-
-      - name: Build Web
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f package.json ]; then
-            npm ci --prefer-offline --legacy-peer-deps
-            npm run build
-          elif [ -f frontend/package.json ]; then
-            (cd frontend && npm ci --prefer-offline --legacy-peer-deps && npm run build)
-          else
-            echo "⚠️ No package.json found, skipping web build"
-          fi
-
-      - name: Prepare Web artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-          FILE="web.zip"
-          if [ -d dist ]; then
-            zip -r "$FILE" dist >/dev/null
-          elif [ -d build ]; then
-            zip -r "$FILE" build >/dev/null
-          elif [ -d www ]; then
-            zip -r "$FILE" www >/dev/null
-          else
-            zip -r "$FILE" . >/dev/null
-          fi
-
-          if [ -f "$FILE" ]; then
-            echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
-          else
-            echo "FILE_PATH=" >> "$GITHUB_ENV"
-          fi
-
-      - name: Upload Web to App Forge
-        if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "📤 Uploading $FILE_PATH to App Forge..."
-          curl -fsSL -X POST "$API/ci/ingest/${BUILD_ID}" \
-            -H "X-Filename: $(basename "$FILE_PATH")" \
-            -H "X-Content-Type: application/zip" \
-            -H "X-Build-Token: $TOKEN" \
-            --data-binary @"$FILE_PATH" || echo "⚠️ Web upload failed"
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: 17
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
+          api-level: 33
+          build-tools: 33.0.2
           cmdline-tools-version: "latest"
           packages: |
             platform-tools
-            cmdline-tools;latest
-            build-tools;33.0.2
-            platforms;android-33
+            "cmdline-tools;latest"
+            "build-tools;33.0.2"
+            "platforms;android-33"
           accept-android-sdk-licenses: true
 
-      - name: Build APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          GRADLEW="./gradlew"
-          if [ ! -f gradlew ]; then
-            GRADLEW=$(find . -name gradlew | head -n1)
-          fi
-          chmod +x "$GRADLEW"
-          "$GRADLEW" assembleRelease
-          FILE=$(find . -type f -path "*/build/outputs/apk/*release*/*.apk" | head -n1)
-          if [ -f "$FILE" ]; then
-            echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
-          else
-            echo "FILE_PATH=" >> "$GITHUB_ENV"
-          fi
-
-      - name: Upload APK to App Forge
-        if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "📤 Uploading APK $FILE_PATH..."
-          curl -fsSL -X POST "$API/ci/ingest/${BUILD_ID}" \
-            -H "X-Filename: $(basename "$FILE_PATH")" \
-            -H "X-Content-Type: application/vnd.android.package-archive" \
-            -H "X-Build-Token: $TOKEN" \
-            --data-binary @"$FILE_PATH" || echo "⚠️ APK upload failed"
-
-      - name: Build AAB
-        shell: bash
-        run: |
-          set -euo pipefail
-          GRADLEW="./gradlew"
-          if [ ! -f gradlew ]; then
-            GRADLEW=$(find . -name gradlew | head -n1)
-          fi
-          chmod +x "$GRADLEW"
-          "$GRADLEW" bundleRelease
-          FILE=$(find . -type f -path "*/build/outputs/bundle/*[Rr]elease*/*.aab" | head -n1)
-          if [ -f "$FILE" ]; then
-            echo "FILE_PATH=$FILE" >> "$GITHUB_ENV"
-          else
-            echo "FILE_PATH=" >> "$GITHUB_ENV"
-          fi
-
-      - name: Upload AAB to App Forge
-        if: ${{ env.TOKEN != '' && env.FILE_PATH != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "📤 Uploading AAB $FILE_PATH..."
-          curl -fsSL -X POST "$API/ci/ingest/${BUILD_ID}" \
-            -H "X-Filename: $(basename "$FILE_PATH")" \
-            -H "X-Content-Type: application/octet-stream" \
-            -H "X-Build-Token: $TOKEN" \
-            --data-binary @"$FILE_PATH" || echo "⚠️ AAB upload failed"
-
-      - name: Upload all artifacts to GitHub
-        uses: actions/upload-artifact@v4
+      - name: Cache Gradle
+        uses: actions/cache@v3
         with:
-          name: all-builds
           path: |
-            web.zip
-            $(find . -type f -path "*/build/outputs/apk/*release*/*.apk" | head -n1)
-            $(find . -type f -path "*/build/outputs/bundle/*[Rr]elease*/*.aab" | head -n1)
-          retention-days: 5
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Grant execute permission for Gradlew
+        run: chmod +x ./gradlew
+
+      - name: Clean project
+        run: ./gradlew clean --stacktrace
+
+      - name: Build all variants
+        run: ./gradlew assemble --parallel --stacktrace
+
+      - name: Run all unit tests
+        run: ./gradlew test --parallel --stacktrace
+
+      - name: Run lint
+        run: ./gradlew lint --stacktrace
+
+      - name: Upload all APKs
+        if: success()
+        uses: actions/upload-artifact@v3
+        with:
+          name: all-apks
+          path: app/build/outputs/apk/**/*
+
+      - name: Upload AABs (if any)
+        if: success()
+        uses: actions/upload-artifact@v3
+        with:
+          name: all-aabs
+          path: app/build/outputs/bundle/**/*
+
+      - name: Upload test results
+        if: success()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results
+          path: app/build/test-results/testDebugUnitTest/
