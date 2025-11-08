@@ -1,4 +1,4 @@
-name: App Forge CI - Robust All-in-One
+name: App Forge CI - Web/APK/AAB Generator
 
 on:
   push:
@@ -7,11 +7,10 @@ on:
   workflow_dispatch:
     inputs:
       build_id:
-        description: "App Forge Build ID (from App Forge UI)"
+        description: "App Forge Build ID"
         required: true
         type: string
 
-# Безопасные секреты — НЕ кладём токены в код!
 env:
   API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
   TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
@@ -20,23 +19,24 @@ env:
 jobs:
   build-all:
     runs-on: ubuntu-latest
-    # Не даём одной падалке обрубить всё: сам контролирую ошибки внутри скриптов.
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js 18 (stable)
+      # Node.js для веба
+      - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
           node-version: "18"
 
-      - name: Set up Java 17 (Temurin)
+      # Java для Android
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK (robust)
+      # Android SDK
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: "latest"
@@ -47,193 +47,153 @@ jobs:
             platforms;android-34
           accept-android-sdk-licenses: true
 
-      - name: Show Android SDK (debug)
+      - name: Show Android SDK
         shell: bash
         run: |
-          echo "ANDROID_HOME: ${ANDROID_HOME:-unset}"
-          echo "ANDROID_SDK_ROOT: ${ANDROID_SDK_ROOT:-unset}"
+          echo "ANDROID_HOME=${ANDROID_HOME:-unset}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-unset}"
           SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/android-sdk}}"
           echo "Using SDK path: $SDK"
           ls -la "$SDK" || true
           ls -la "$SDK/platforms" || true
           ls -la "$SDK/build-tools" || true
 
-      - name: Install frontend deps (if any) — tolerant
+      # Установка зависимостей фронтенда
+      - name: Install frontend dependencies
         shell: bash
         run: |
           set -eu -o pipefail
-          STATUS_FRONTEND=0
           if [ -f package.json ]; then
-            echo "→ Installing root frontend dependencies"
-            npm ci --prefer-offline --legacy-peer-deps || STATUS_FRONTEND=$?
+            npm ci --prefer-offline --legacy-peer-deps || true
           elif [ -f frontend/package.json ]; then
-            echo "→ Installing frontend dependencies in ./frontend"
-            (cd frontend && npm ci --prefer-offline --legacy-peer-deps) || STATUS_FRONTEND=$?
+            (cd frontend && npm ci --prefer-offline --legacy-peer-deps) || true
           else
-            echo "→ No frontend package.json found; skipping npm install"
-          fi
-          echo "FRONTEND_INSTALL_STATUS=$STATUS_FRONTEND" >> "$GITHUB_ENV"
-          if [ "$STATUS_FRONTEND" -ne 0 ]; then
-            echo "⚠️ Frontend install returned $STATUS_FRONTEND — will still attempt builds"
-          fi
+            echo "No frontend package.json found; skipping npm install"
 
-      - name: Build Web, APK, AAB (tolerant)
+      # Сборка Web, APK и AAB
+      - name: Build Web, APK, AAB
         shell: bash
         run: |
           set -eu -o pipefail
-          # prepare status flags
           WEB_OK=0
           APK_OK=0
           AAB_OK=0
 
-          # WEB build
-          echo "=== WEB build ==="
+          # Web
+          echo "=== Building Web ==="
           if [ -f package.json ]; then
             npm run build || WEB_OK=$?
           elif [ -f frontend/package.json ]; then
             (cd frontend && npm run build) || WEB_OK=$?
           else
-            echo "No web project detected; skipping web build"
+            echo "No Web project found"
             WEB_OK=2
           fi
-          echo "WEB_BUILD_STATUS=$WEB_OK" >> "$GITHUB_ENV"
-          if [ "$WEB_OK" -eq 0 ]; then echo "✅ Web build OK"; else echo "⚠️ Web build returned $WEB_OK"; fi
+          echo "WEB_OK=$WEB_OK" >> $GITHUB_ENV
 
-          # Find gradlew
-          echo "=== Gradle wrapper check ==="
-          if [ -f ./gradlew ]; then
-            GRADLEW=./gradlew
-          else
+          # Gradle wrapper
+          GRADLEW=./gradlew
+          if [ ! -f ./gradlew ]; then
             GRADLEW=$(find . -maxdepth 4 -type f -name gradlew | head -n1 || true)
-            if [ -z "$GRADLEW" ]; then
-              echo "⚠️ gradlew not found in repo root or subdirs"
-              GRADLEW=""
-            fi
           fi
           if [ -n "$GRADLEW" ]; then chmod +x "$GRADLEW"; fi
 
-          # APK build
-          echo "=== APK build ==="
+          # APK
+          echo "=== Building APK ==="
           if [ -n "$GRADLEW" ]; then
             "$GRADLEW" assembleRelease || APK_OK=$?
           else
-            echo "Skipping APK: gradlew missing"
+            echo "Skipping APK build: gradlew missing"
             APK_OK=3
           fi
-          echo "APK_BUILD_STATUS=$APK_OK" >> "$GITHUB_ENV"
-          if [ "$APK_OK" -eq 0 ]; then echo "✅ APK build OK"; else echo "⚠️ APK build returned $APK_OK"; fi
+          echo "APK_OK=$APK_OK" >> $GITHUB_ENV
 
-          # AAB build
-          echo "=== AAB build ==="
+          # AAB
+          echo "=== Building AAB ==="
           if [ -n "$GRADLEW" ]; then
             "$GRADLEW" bundleRelease || AAB_OK=$?
           else
-            echo "Skipping AAB: gradlew missing"
+            echo "Skipping AAB build: gradlew missing"
             AAB_OK=3
           fi
-          echo "AAB_BUILD_STATUS=$AAB_OK" >> "$GITHUB_ENV"
-          if [ "$AAB_OK" -eq 0 ]; then echo "✅ AAB build OK"; else echo "⚠️ AAB build returned $AAB_OK"; fi
+          echo "AAB_OK=$AAB_OK" >> $GITHUB_ENV
 
-          # Export statuses for final summary
-          echo "FINAL_WEB_STATUS=$WEB_OK" >> "$GITHUB_ENV"
-          echo "FINAL_APK_STATUS=$APK_OK" >> "$GITHUB_ENV"
-          echo "FINAL_AAB_STATUS=$AAB_OK" >> "$GITHUB_ENV"
-
-      - name: Collect artifacts paths (safe)
+      # Подготовка артефактов
+      - name: Prepare artifacts
         shell: bash
         run: |
           set -euo pipefail
-          # web artifact
           WEB_ZIP="web.zip"
           if [ -d dist ]; then
-            zip -r "$WEB_ZIP" dist >/dev/null || true
+            zip -r "$WEB_ZIP" dist >/dev/null
           elif [ -d build ]; then
-            zip -r "$WEB_ZIP" build >/dev/null || true
-          elif [ -d frontend/dist ]; then
-            zip -r "$WEB_ZIP" frontend/dist >/dev/null || true
+            zip -r "$WEB_ZIP" build >/dev/null
+          elif [ -d www ]; then
+            zip -r "$WEB_ZIP" www >/dev/null
           else
-            # create empty placeholder so uploads have something
             echo "{}" > empty_web_placeholder.txt
-            zip -r "$WEB_ZIP" empty_web_placeholder.txt >/dev/null || true
+            zip -r "$WEB_ZIP" empty_web_placeholder.txt >/dev/null
           fi
-          echo "WEB_ARTIFACT=$WEB_ZIP" >> "$GITHUB_ENV"
+          echo "WEB_ARTIFACT=$WEB_ZIP" >> $GITHUB_ENV
 
-          # apk
           APK_FILE=$(find . -type f -path "*/build/outputs/apk/*release*/*.apk" | head -n1 || true)
-          if [ -n "$APK_FILE" ]; then echo "APK_ARTIFACT=$APK_FILE" >> "$GITHUB_ENV"; else echo "APK_ARTIFACT=" >> "$GITHUB_ENV"; fi
+          echo "APK_ARTIFACT=$APK_FILE" >> $GITHUB_ENV
 
-          # aab
           AAB_FILE=$(find . -type f -path "*/build/outputs/bundle/*[Rr]elease*/*.aab" | head -n1 || true)
-          if [ -n "$AAB_FILE" ]; then echo "AAB_ARTIFACT=$AAB_FILE" >> "$GITHUB_ENV"; else echo "AAB_ARTIFACT=" >> "$GITHUB_ENV"; fi
+          echo "AAB_ARTIFACT=$AAB_FILE" >> $GITHUB_ENV
 
-          # show
-          echo "Collected:"
-          echo " WEB -> $WEB_ZIP"
-          echo " APK -> ${APK_FILE:-(none)}"
-          echo " AAB -> ${AAB_FILE:-(none)}"
-
-      - name: Upload to App Forge (with retries) — only if TOKEN set
+      # Upload в App Forge с повтором
+      - name: Upload to App Forge
         if: ${{ env.TOKEN != '' }}
         shell: bash
         run: |
           set -euo pipefail
           API_URL="$API/ci/ingest/${BUILD_ID}"
-          upload_with_retries() {
+          upload() {
             local path="$1"
             local ctype="$2"
             if [ -z "$path" ] || [ ! -f "$path" ]; then
-              echo "No file at $path, skipping upload"
+              echo "Skipping missing file $path"
               return 0
             fi
-            echo "Uploading $path to $API_URL"
-            local attempt=1
-            local max=3
-            while [ $attempt -le $max ]; do
+            for i in 1 2 3; do
               curl -S --fail -X POST "$API_URL" \
                 -H "X-Filename: $(basename "$path")" \
                 -H "X-Content-Type: $ctype" \
                 -H "X-Build-Token: $TOKEN" \
-                --data-binary @"$path" && return 0 || {
-                  echo "Upload attempt $attempt failed"
-                  attempt=$((attempt+1))
-                  sleep $((attempt * 2))
-                }
+                --data-binary @"$path" && return 0 || echo "Attempt $i failed"
+              sleep $((i*2))
             done
-            echo "⚠️ Upload ultimately failed for $path"
-            return 1
+            echo "⚠️ Upload failed: $path"
           }
 
-          # web
-          upload_with_retries "${WEB_ARTIFACT:-web.zip}" "application/zip" || true
-          # apk
-          upload_with_retries "${APK_ARTIFACT:-}" "application/vnd.android.package-archive" || true
-          # aab
-          upload_with_retries "${AAB_ARTIFACT:-}" "application/octet-stream" || true
+          upload "${WEB_ARTIFACT:-web.zip}" "application/zip"
+          upload "${APK_ARTIFACT:-}" "application/vnd.android.package-archive"
+          upload "${AAB_ARTIFACT:-}" "application/octet-stream"
 
-      - name: Upload fallback artifacts to GitHub Actions (always)
+      # GitHub fallback
+      - name: Upload fallback artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: appforge-all-builds
+          name: appforge-all
           path: |
             ${{ env.WEB_ARTIFACT }}
             ${{ env.APK_ARTIFACT }}
             ${{ env.AAB_ARTIFACT }}
           retention-days: 7
 
-      - name: Final summary (always succeed)
+      # Финальный summary
+      - name: Summary
         if: always()
         shell: bash
         run: |
           echo "=== SUMMARY ==="
           echo "Build ID: ${BUILD_ID}"
-          echo "TOKEN present: ${TOKEN:+yes}"
-          echo "Web build status: ${FINAL_WEB_STATUS:-unknown}"
-          echo "APK build status: ${FINAL_APK_STATUS:-unknown}"
-          echo "AAB build status: ${FINAL_AAB_STATUS:-unknown}"
+          echo "Web build: ${WEB_OK:-unknown}"
+          echo "APK build: ${APK_OK:-unknown}"
+          echo "AAB build: ${AAB_OK:-unknown}"
           echo "Artifacts:"
           echo " - WEB: ${WEB_ARTIFACT:-(none)}"
           echo " - APK: ${APK_ARTIFACT:-(none)}"
           echo " - AAB: ${AAB_ARTIFACT:-(none)}"
-          echo "If uploads failed, download artifacts from the Actions run -> Artifacts"
-          # ensure job exits successfully so pipeline doesn't show error for minor failures
           exit 0
