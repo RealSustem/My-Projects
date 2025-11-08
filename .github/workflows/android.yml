@@ -14,8 +14,6 @@ on:
 env:
   BUILD_ID: ${{ github.event.inputs.build_id || vars.REPO_VAR_BUILD_ID }}
   API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
-  # Опционально укажи в Secrets → Actions → New repository secret: BUILD_JSON_URL
-  JSON_URL: ${{ secrets.BUILD_JSON_URL || '' }}
 
 # ------------------------------------------------------------------
 # JOB: build_apk
@@ -25,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
-      JSON_URL: ${{ env.JSON_URL }}
+      JSON_URL: ${{ secrets.BUILD_JSON_URL || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,19 +31,8 @@ jobs:
       - name: Prepare runner (install utils)
         run: |
           sudo apt-get update -y
+          # tar, unzip, wget, curl, zip — всё ставим сразу
           sudo apt-get install -y tar unzip wget curl zip lib32stdc++6 lib32z1
-
-      - name: Download JSON (optional)
-        if: ${{ env.JSON_URL != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Downloading JSON from $JSON_URL"
-          curl -fSL "$JSON_URL" -o build-config.json
-          echo "Downloaded build-config.json:"
-          ls -l build-config.json
-          # выводим часть для отладки
-          head -n 40 build-config.json || true
 
       - name: Set up Java (for Gradle)
         uses: actions/setup-java@v4
@@ -62,11 +49,15 @@ jobs:
           sudo chown -R $USER:$USER $ANDROID_HOME
           mkdir -p $ANDROID_HOME/cmdline-tools
           cd $ANDROID_HOME/cmdline-tools
+          # фиксированная версия commandlinetools (рабочая)
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
           unzip -q cmdline-tools.zip
+          # в zip обычно папка cmdline-tools, перемещаем в latest
           mv cmdline-tools latest || true
+          # добавляем в PATH корректно (через GITHUB_ENV чтобы не перезаписать системный PATH)
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH" >> $GITHUB_ENV
+          # соглашаемся с лицензиями и ставим нужные пакеты
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=${ANDROID_HOME} --licenses >/dev/null || true
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=${ANDROID_HOME} \
             "platform-tools" \
@@ -82,37 +73,16 @@ jobs:
           tar --version || true
           adb --version || true
 
-      - name: Ensure Gradle Wrapper (install system gradle and create wrapper if missing)
+      - name: Download JSON (optional)
+        if: ${{ env.JSON_URL != '' }}
         shell: bash
         run: |
-          set -eux
-          shopt -s globstar
-          # проверяем наличие gradlew в корне или подпапках
-          if [ -f gradlew ] || ls -1 **/gradlew 2>/dev/null | grep -q .; then
-            echo "gradlew already present"
-          else
-            echo "gradlew not found — installing system gradle and generating wrapper"
-            sudo apt-get update -y
-            sudo apt-get install -y gradle
-            # попробуем найти основной проект папку (где есть build.gradle(.kts))
-            if ls -1 */build.gradle* 1>/dev/null 2>&1; then
-              ROOT_DIR="$(ls -1 */build.gradle* | head -n1 | xargs dirname)"
-              echo "Found subproject with build.gradle at $ROOT_DIR, generating wrapper there"
-              (cd "$ROOT_DIR" && gradle wrapper)
-              # переместим wrapper в корень, если нужно
-              if [ -f "$ROOT_DIR/gradlew" ]; then
-                mv "$ROOT_DIR/gradlew" ./ || true
-                mkdir -p gradle/wrapper
-                mv "$ROOT_DIR/gradle/wrapper/"* gradle/wrapper/ || true
-                [ -f gradlew ] && chmod +x gradlew
-              fi
-            else
-              # если build.gradle нет — просто сделаем wrapper в репо корне
-              gradle wrapper
-              [ -f gradlew ] && chmod +x gradlew
-            fi
-            echo "Gradle wrapper created"
-          fi
+          set -euo pipefail
+          echo "Downloading JSON from $JSON_URL"
+          curl -fSL "$JSON_URL" -o build-config.json
+          echo "Downloaded build-config.json:"
+          ls -l build-config.json
+          head -n 40 build-config.json || true
 
       - name: Build APK (Gradle)
         shell: bash
@@ -154,7 +124,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
-      JSON_URL: ${{ env.JSON_URL }}
+      JSON_URL: ${{ secrets.BUILD_JSON_URL || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -163,17 +133,6 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y tar unzip wget curl zip lib32stdc++6 lib32z1
-
-      - name: Download JSON (optional)
-        if: ${{ env.JSON_URL != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Downloading JSON from $JSON_URL"
-          curl -fSL "$JSON_URL" -o build-config.json
-          echo "Downloaded build-config.json:"
-          ls -l build-config.json
-          head -n 40 build-config.json || true
 
       - name: Set up Java (for Gradle)
         uses: actions/setup-java@v4
@@ -202,32 +161,16 @@ jobs:
             "build-tools;34.0.0" >/dev/null || true
           echo "Android SDK installed"
 
-      - name: Ensure Gradle Wrapper (install system gradle and create wrapper if missing)
+      - name: Download JSON (optional)
+        if: ${{ env.JSON_URL != '' }}
         shell: bash
         run: |
-          set -eux
-          shopt -s globstar
-          if [ -f gradlew ] || ls -1 **/gradlew 2>/dev/null | grep -q .; then
-            echo "gradlew already present"
-          else
-            echo "gradlew not found — installing system gradle and generating wrapper"
-            sudo apt-get update -y
-            sudo apt-get install -y gradle
-            if ls -1 */build.gradle* 1>/dev/null 2>&1; then
-              ROOT_DIR="$(ls -1 */build.gradle* | head -n1 | xargs dirname)"
-              (cd "$ROOT_DIR" && gradle wrapper)
-              if [ -f "$ROOT_DIR/gradlew" ]; then
-                mv "$ROOT_DIR/gradlew" ./ || true
-                mkdir -p gradle/wrapper
-                mv "$ROOT_DIR/gradle/wrapper/"* gradle/wrapper/ || true
-                [ -f gradlew ] && chmod +x gradlew
-              fi
-            else
-              gradle wrapper
-              [ -f gradlew ] && chmod +x gradlew
-            fi
-            echo "Gradle wrapper created"
-          fi
+          set -euo pipefail
+          echo "Downloading JSON from $JSON_URL"
+          curl -fSL "$JSON_URL" -o build-config.json
+          echo "Downloaded build-config.json:"
+          ls -l build-config.json
+          head -n 40 build-config.json || true
 
       - name: Build AAB (Gradle)
         shell: bash
@@ -269,7 +212,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
-      JSON_URL: ${{ env.JSON_URL }}
+      JSON_URL: ${{ secrets.BUILD_JSON_URL || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
