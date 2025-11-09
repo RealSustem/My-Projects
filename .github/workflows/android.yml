@@ -1,291 +1,186 @@
-name: App Forge CI
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+generator_single.py
+Универсальный генератор приложений на основе YAML или AI.
+Создаёт UI, backend, и сборки web/apk/aab/exe/iso.
+"""
 
-on:
-  push:
-    branches: [ "main" ]
-    tags: [ "v*" ]
-  workflow_dispatch:
-    inputs:
-      build_id:
-        description: "App Forge Build ID (from App Forge UI)"
-        required: true
-        type: string
+import os, sys, subprocess, datetime, yaml, shutil, textwrap
 
-env:
-  BUILD_ID: ${{ github.event.inputs.build_id || vars.REPO_VAR_BUILD_ID }}
-  API: https://riff.new/_projects/brittle-warm-bridge-jr0j/dbtn/devx/app/routes
+# === CONFIG ===
+OPENAI_KEYS = [
+    os.getenv("OPENAI_KEY_1"),
+    os.getenv("OPENAI_KEY_2"),
+    os.getenv("OPENAI_KEY_3"),
+    os.getenv("OPENAI_KEY_4"),
+    os.getenv("OPENAI_KEY_5"),
+]
+DEFAULT_BUILD = ["web"]
+OUT_DIR = "dist"
 
-# ------------------------------------------------------------------
-# JOB: build_apk
-# ------------------------------------------------------------------
-jobs:
-  build_apk:
-    runs-on: ubuntu-latest
-    env:
-      TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
-      JSON_URL: ${{ secrets.JSON_URL }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Prepare runner (install utils)
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y tar unzip wget curl zip lib32stdc++6 lib32z1
+# === Вспомогательные функции ===
+def week_index():
+    """Определяет номер недели и выбирает индекс ключа."""
+    week = datetime.date.today().isocalendar()[1]
+    return (week - 1) % 5  # 0..4
 
-      - name: Set up Java (for Gradle)
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
 
-      - name: Install Android SDK (manual, stable)
-        shell: bash
-        run: |
-          set -eux
-          export ANDROID_HOME=/usr/local/lib/android/sdk
-          sudo mkdir -p $ANDROID_HOME
-          sudo chown -R $USER:$USER $ANDROID_HOME
-          mkdir -p $ANDROID_HOME/cmdline-tools
-          cd $ANDROID_HOME/cmdline-tools
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
-          unzip -q cmdline-tools.zip
-          mv cmdline-tools latest || true
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH" >> $GITHUB_ENV
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=${ANDROID_HOME} --licenses >/dev/null || true
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=${ANDROID_HOME} \
-            "platform-tools" \
-            "platforms;android-34" \
-            "build-tools;34.0.0" >/dev/null || true
-          echo "Android SDK installed"
+def run(cmd, cwd=None, check=True):
+    """Выполняет системную команду."""
+    print(f"\n$ {cmd}")
+    res = subprocess.run(cmd, shell=True, cwd=cwd)
+    if check and res.returncode != 0:
+        sys.exit(res.returncode)
 
-      - name: Download JSON (if URL provided)
-        run: |
-          if [ -n "${JSON_URL}" ]; then
-            curl -sSLo config.json "$JSON_URL"
-            echo "JSON downloaded"
-          else
-            echo "No JSON URL provided, skipping"
-          fi
 
-      - name: Install Gradle (fallback)
-        run: |
-          if [ ! -f gradlew ] && ! ls -1 **/gradlew 2>/dev/null | grep -q .; then
-            echo "gradlew not found, installing Gradle 8.7"
-            curl -sSLo gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
-            unzip -q gradle.zip -d $HOME/gradle
-            echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
-          else
-            echo "gradlew found, skipping Gradle install"
-          fi
+def ensure_dir(path):
+    os.makedirs(path, exist_ok=True)
 
-      - name: Verify sdk + tools
-        run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --list | head -n 40 || true
-          which tar || true
-          tar --version || true
-          adb --version || true
 
-      - name: Build APK (Gradle)
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s globstar
-          if [ -f gradlew ] || ls -1 **/gradlew 2>/dev/null | grep -q .; then
-            GRADLEW="$(ls -1 **/gradlew 2>/dev/null | head -n1)"
-            [ -z "$GRADLEW" ] && GRADLEW=./gradlew
-            chmod +x "$GRADLEW"
-            "$GRADLEW" assembleRelease
-          else
-            echo "gradlew not found; skipping APK build"
-            exit 0
-          fi
+def install_system_deps():
+    print("=== Installing system deps ===")
+    pkgs = ["nodejs", "npm", "python3-pip", "genisoimage"]
+    try:
+        run("sudo apt-get update -y && sudo apt-get install -y " + " ".join(pkgs), check=False)
+    except Exception as e:
+        print(f"Apt skipped: {e}")
 
-      - name: Upload APK to App Forge (skip if no token)
-        if: ${{ env.TOKEN != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s globstar
-          APK="$(ls -1 **/build/outputs/apk/*release*/**/*.apk **/build/outputs/apk/release/*.apk 2>/dev/null | head -n1 || true)"
-          if [ -z "$APK" ]; then
-            echo "APK not found; skipping upload"
-            exit 0
-          fi
-          echo "Uploading $APK"
-          curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
-            -H "X-Filename: $(basename "$APK")" \
-            -H "X-Content-Type: application/vnd.android.package-archive" \
-            -H "X-Build-Token: $TOKEN" \
-            --data-binary @"$APK"
 
-# ------------------------------------------------------------------
-# JOB: build_aab
-# ------------------------------------------------------------------
-  build_aab:
-    runs-on: ubuntu-latest
-    env:
-      TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
-      JSON_URL: ${{ secrets.JSON_URL }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+def install_pip_deps():
+    print("=== Installing pip deps ===")
+    run("python3 -m pip install --upgrade pip pyyaml jinja2 openai pyinstaller", check=False)
 
-      - name: Prepare runner (install utils)
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y tar unzip wget curl zip lib32stdc++6 lib32z1
 
-      - name: Set up Java (for Gradle)
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
+def install_flutter():
+    print("=== Installing Flutter ===")
+    if not shutil.which("flutter"):
+        run("git clone https://github.com/flutter/flutter.git -b stable ~/flutter", check=False)
+        os.environ["PATH"] += os.pathsep + os.path.expanduser("~/flutter/bin")
 
-      - name: Install Android SDK (manual, stable)
-        shell: bash
-        run: |
-          set -eux
-          export ANDROID_HOME=/usr/local/lib/android/sdk
-          sudo mkdir -p $ANDROID_HOME
-          sudo chown -R $USER:$USER $ANDROID_HOME
-          mkdir -p $ANDROID_HOME/cmdline-tools
-          cd $ANDROID_HOME/cmdline-tools
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
-          unzip -q cmdline-tools.zip
-          mv cmdline-tools latest || true
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH" >> $GITHUB_ENV
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=${ANDROID_HOME} --licenses >/dev/null || true
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=${ANDROID_HOME} \
-            "platform-tools" \
-            "platforms;android-34" \
-            "build-tools;34.0.0" >/dev/null || true
-          echo "Android SDK installed"
 
-      - name: Download JSON (if URL provided)
-        run: |
-          if [ -n "${JSON_URL}" ]; then
-            curl -sSLo config.json "$JSON_URL"
-            echo "JSON downloaded"
-          else
-            echo "No JSON URL provided, skipping"
-          fi
+# === AI генерация YAML ===
+def ai_generate_yaml(api_key):
+    import openai
+    openai.api_key = api_key
+    prompt = textwrap.dedent("""
+    Сгенерируй YAML-описание кроссплатформенного приложения:
+    - Имя
+    - Описание
+    - Страницы UI (минимум 2)
+    - Компоненты (кнопки, поля ввода, списки)
+    - Backend endpoints (GET, POST)
+    """).strip()
 
-      - name: Install Gradle (fallback)
-        run: |
-          if [ ! -f gradlew ] && ! ls -1 **/gradlew 2>/dev/null | grep -q .; then
-            echo "gradlew not found, installing Gradle 8.7"
-            curl -sSLo gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
-            unzip -q gradle.zip -d $HOME/gradle
-            echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
-          else
-            echo "gradlew found, skipping Gradle install"
-          fi
+    print("=== Generating YAML via AI ===")
+    completion = openai.ChatCompletion.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = completion.choices[0].message.content
+    with open("app.yaml", "w") as f:
+        f.write(text)
+    print("✅ app.yaml generated via AI")
 
-      - name: Build AAB (Gradle)
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s globstar
-          if [ -f gradlew ] || ls -1 **/gradlew 2>/dev/null | grep -q .; then
-            GRADLEW="$(ls -1 **/gradlew 2>/dev/null | head -n1)"
-            [ -z "$GRADLEW" ] && GRADLEW=./gradlew
-            chmod +x "$GRADLEW"
-            "$GRADLEW" bundleRelease
-          else
-            echo "gradlew not found; skipping AAB build"
-            exit 0
-          fi
 
-      - name: Upload AAB to App Forge (skip if no token)
-        if: ${{ env.TOKEN != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s globstar
-          AAB="$(ls -1 **/build/outputs/bundle/*[Rr]elease*/**/*.aab **/build/outputs/bundle/release/*.aab 2>/dev/null | head -n1 || true)"
-          if [ -z "$AAB" ]; then
-            echo "AAB not found; skipping upload"
-            exit 0
-          fi
-          echo "Uploading $AAB"
-          curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
-            -H "X-Filename: $(basename "$AAB")" \
-            -H "X-Content-Type: application/octet-stream" \
-            -H "X-Build-Token: $TOKEN" \
-            --data-binary @"$AAB"
+# === Генерация структуры приложения ===
+def build_from_yaml(path="app.yaml", out_dir=OUT_DIR, targets=None):
+    ensure_dir(out_dir)
+    with open(path, "r") as f:
+        app = yaml.safe_load(f)
 
-# ------------------------------------------------------------------
-# JOB: build_web
-# ------------------------------------------------------------------
-  build_web:
-    runs-on: ubuntu-latest
-    env:
-      TOKEN: ${{ secrets.BUILD_INGEST_TOKEN }}
-      JSON_URL: ${{ secrets.JSON_URL }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    app_name = app.get("name", "GeneratedApp")
+    app_desc = app.get("description", "AI-generated application")
 
-      - name: Prepare runner (install utils)
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y tar unzip wget curl zip
+    # --- FRONTEND ---
+    frontend = os.path.join(out_dir, "frontend")
+    ensure_dir(frontend)
+    index_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{app_name}</title>
+  <style>
+    body {{
+      font-family: sans-serif;
+      background: linear-gradient(135deg, #e0f7fa, #fff);
+      text-align: center;
+      padding: 3rem;
+    }}
+    h1 {{ color: #00796b; }}
+    button {{
+      background: #00796b; color: white; border: none;
+      padding: 1em 2em; border-radius: 8px; cursor: pointer;
+    }}
+  </style>
+</head>
+<body>
+  <h1>{app_name}</h1>
+  <p>{app_desc}</p>
+  <button onclick="alert('Hello from {app_name}!')">Click me</button>
+</body>
+</html>
+"""
+    with open(os.path.join(frontend, "index.html"), "w") as f:
+        f.write(index_html)
+    print("✅ Frontend generated")
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+    # --- BACKEND ---
+    backend = os.path.join(out_dir, "backend")
+    ensure_dir(backend)
+    app_py = textwrap.dedent(f"""
+    from flask import Flask, jsonify
+    app = Flask(__name__)
 
-      - name: Download JSON (if URL provided)
-        run: |
-          if [ -n "${JSON_URL}" ]; then
-            curl -sSLo config.json "$JSON_URL"
-            echo "JSON downloaded"
-          else
-            echo "No JSON URL provided, skipping"
-          fi
+    @app.route('/')
+    def home():
+        return jsonify({{"message": "Welcome to {app_name}"}})
 
-      - name: Install web deps
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f package.json ]; then
-            npm ci
-          elif [ -f frontend/package.json ]; then
-            (cd frontend && npm ci)
-          else
-            echo "No package.json found; skipping npm install"
-          fi
+    @app.route('/ping')
+    def ping():
+        return jsonify({{"pong": True}})
 
-      - name: Build web
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f package.json ]; then
-            npm run build
-          elif [ -f frontend/package.json ]; then
-            (cd frontend && npm run build)
-          else
-            echo "No package.json found; skipping web build"
-          fi
+    if __name__ == '__main__':
+        app.run(host='0.0.0.0', port=5000)
+    """)
+    with open(os.path.join(backend, "app.py"), "w") as f:
+        f.write(app_py)
+    print("✅ Backend generated")
 
-      - name: Upload web to App Forge (skip if no token)
-        if: ${{ env.TOKEN != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          ZIP=web.zip
-          if [ -d dist ]; then zip -r "$ZIP" dist >/dev/null
-          elif [ -d build ]; then zip -r "$ZIP" build >/dev/null
-          elif [ -d www ]; then zip -r "$ZIP" www >/dev/null
-          else zip -r "$ZIP" . >/dev/null
-          fi
-          curl -sS -X POST "$API/ci/ingest/$BUILD_ID" \
-            -H "X-Filename: $ZIP" \
-            -H "X-Content-Type: application/zip" \
-            -H "X-Build-Token: $TOKEN" \
-            --data-binary @"$ZIP"
+    # --- Сборка ---
+    print(f"=== Building targets: {targets} ===")
+    if "web" in targets:
+        run("npm install -g serve", check=False)
+    if "exe" in targets:
+        run(f"pyinstaller --onefile {backend}/app.py", check=False)
+    if "apk" in targets or "aab" in targets:
+        install_flutter()
+        run("flutter build apk", check=False)
+    if "iso" in targets:
+        run(f"genisoimage -o {out_dir}/app.iso -J -r {out_dir}", check=False)
+    print("✅ Build complete")
+
+
+# === MAIN ===
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    out = OUT_DIR
+    targets = DEFAULT_BUILD
+    ai_flag = "--ai" in args or not os.path.exists("app.yaml")
+
+    install_system_deps()
+    install_pip_deps()
+
+    idx = week_index()
+    api_key = OPENAI_KEYS[idx]
+    print(f"📅 Week {datetime.date.today().isocalendar()[1]} → selected API key #{idx+1}")
+
+    if ai_flag and api_key:
+        ai_generate_yaml(api_key)
+    elif not os.path.exists("app.yaml"):
+        print("❌ No app.yaml found and AI disabled. Exiting.")
+        sys.exit(1)
+
+    build_from_yaml("app.yaml", out, targets)
+    print("🎯 All done! dist/ ready.")
